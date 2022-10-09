@@ -5,20 +5,42 @@
 #include "EdModeInteractiveToolsContext.h"
 #include "InteractiveToolManager.h"
 #include "MeshEditorEditorModeCommands.h"
+#include "MeshEditorSettings.h"
 #include "UnrealEd.h"
+#include "Algo/Copy.h"
 #include "Dragger/AxisDragger.h"
 #include "Tools/MeshEditorSimpleTool.h"
 #include "Tools/MeshEditorInteractiveTool.h"
-
-// step 2: register a ToolBuilder in FMeshEditorEditorMode::Enter() below
-
+#include "Helper/MeshDataIterators.h"
 
 #define LOCTEXT_NAMESPACE "MeshEditorEditorMode"
 
-const FEditorModeID FMeshEditorEditorMode::EM_MeshEditorEditorModeId = TEXT("EM_MeshEditorEditorMode");
+struct HMeshEdgeProxy : public HHitProxy
+{
+	DECLARE_HIT_PROXY()
 
-// FString FMeshEditorEditorMode::SimpleToolName = TEXT("MeshEditor_ActorInfoTool");
-// FString FMeshEditorEditorMode::InteractiveToolName = TEXT("MeshEditor_MeasureDistanceTool");
+	HMeshEdgeProxy(FVector InPosition, AActor* InActor)
+		: HHitProxy(HPP_UI), RefVector(InPosition), RefActor(InActor)
+	{
+	}
+
+	HMeshEdgeProxy(FVector InFirstEndpoint, FVector InSecondEndpoint, AActor* InActor)
+		: HHitProxy(HPP_UI), FirstRefVector(InFirstEndpoint), SecondRefVector(InSecondEndpoint),
+		  RefActor(InActor)
+	{
+	}
+
+	AActor* RefActor;
+	FVector RefVector;
+
+	// edge info
+	FVector FirstRefVector;
+	FVector SecondRefVector;
+};
+
+IMPLEMENT_HIT_PROXY(HMeshEdgeProxy, HHitProxy);
+
+const FEditorModeID FMeshEditorEditorMode::EM_MeshEditorEditorModeId = TEXT("EM_MeshEditorEditorMode");
 
 FMeshEditorEditorMode::FMeshEditorEditorMode()
 {
@@ -61,9 +83,19 @@ void FMeshEditorEditorMode::Enter()
 		CurrentMeshData->SetFlags(RF_Transactional);
 	}
 
-	// TODO remove
-	UE_LOG(LogTemp, Warning, TEXT("MeshEditorEditorMode - Enter() "));
 	AxisDragger = new FAxisDragger();
+	if (!OnCollectingDataFinished.IsBoundToObject(this))
+	{
+		OnCollectingDataFinished.BindRaw(this, &FMeshEditorEditorMode::CollectingMeshDataFinished);
+	}
+
+	GetWorld()->GetTimerManager().SetTimer(CollectVerticesTimerHandle,
+	                                       FTimerDelegate::CreateRaw(
+		                                       this, &FMeshEditorEditorMode::AsyncCollectMeshData), 0.2f,
+	                                       false);
+	GetWorld()->GetTimerManager().SetTimer(InvalidateHitProxiesTimerHandle,
+	                                       FTimerDelegate::CreateRaw(
+		                                       this, &FMeshEditorEditorMode::InvalidateHitProxies), 0.3f, true);
 	UpdateInitialSelection();
 }
 
@@ -72,41 +104,58 @@ void FMeshEditorEditorMode::Exit()
 {
 	bIsModeOn = false;
 
+	if (CollectVerticesTimerHandle.IsValid())
+	{
+		GetWorld()->GetTimerManager().ClearTimer(CollectVerticesTimerHandle);
+	}
+
+	if (InvalidateHitProxiesTimerHandle.IsValid())
+	{
+		GetWorld()->GetTimerManager().ClearTimer(InvalidateHitProxiesTimerHandle);
+	}
+
 	CurrentMeshData->EraseSelection();
 	delete AxisDragger;
 
 	FEdMode::Exit();
 }
 
+FVector BlendPositions(FVector Pos1, FVector Pos2, float factor = 1.0)
+{
+	return Pos1;
+}
+
 bool FMeshEditorEditorMode::HandleClick(FEditorViewportClient* InViewportClient, HHitProxy* HitProxy,
                                         const FViewportClick& Click)
 {
-	UE_LOG(LogTemp, Warning, TEXT("MeshEditorEditorMode - HandleClick() "));
-
-	bool bSnapHelperHandle{false};
-	bool bPrefabHandle(false);
+	bool bEdgeClickHandle{false};
 
 #ifdef WITH_EDITOR
-	// Process HAxisWidget proxy
-	if (HitProxy != nullptr && HitProxy->IsA(HAxisDraggerProxy::StaticGetType()))
+	if (HitProxy)
 	{
-		const HAxisDraggerProxy* AxisWidgetProxy = static_cast<HAxisDraggerProxy*>(HitProxy);
-		if (Click.GetEvent() == IE_Pressed)
+		const bool bIsLeftMouseButtonClick = (Click.GetKey() == EKeys::LeftMouseButton);
+		if (bIsLeftMouseButtonClick && HitProxy->IsA(HMeshEdgeProxy::StaticGetType()))
 		{
-			UE_LOG(LogTemp, Warning, TEXT("HAxisWidget IE_Pressed. "));
-		}
-		else if (Click.GetEvent() == IE_Released)
-		{
-			// AxisWidget->SetCurrentAxis(AxisWidgetProxy->Axis, AxisWidgetProxy->bFlipped);
-			UE_LOG(LogTemp, Warning, TEXT("HAxisWidget IE_Released. "));
-		}
-		else
-		{
-			UE_LOG(LogTemp, Warning, TEXT("HAxisWidget Clicked. "));
+			const auto MeshEdgeHitProxy = static_cast<HMeshEdgeProxy*>(HitProxy);
+			FVector SelectedVertex = BlendPositions(MeshEdgeHitProxy->FirstRefVector,
+			                                        MeshEdgeHitProxy->SecondRefVector);
+
+			TArray<AActor*> SelectedActors;
+			USelection* CurrentEditorSelection = GEditor->GetSelectedActors();
+			CurrentEditorSelection->GetSelectedObjects<AActor>(SelectedActors);
+
+			const FTransform NewPivotTransform = FTransform(SelectedVertex);
+			for (AActor* Actor : SelectedActors)
+			{
+				Actor->SetPivotOffset(NewPivotTransform.GetRelativeTransform(Actor->GetActorTransform()).GetLocation());
+				GUnrealEd->UpdatePivotLocationForSelection(true);
+			}
+			bEdgeClickHandle = true;
 		}
 	}
 #endif
-	return false;
+
+	return bEdgeClickHandle;
 }
 
 float ComputeScaleFactor(FVector& Base, FVector& DragDelta, int Axis)
@@ -130,6 +179,12 @@ bool FMeshEditorEditorMode::HandleAxisWidgetDelta(FEditorViewportClient* InViewp
 	if (AxisDragger->GetCurrentAxisType() == EAxisList::None)
 	{
 		return false;
+	}
+
+	if (!bIsTracking)
+	{
+		bIsTracking = true;
+		DragTransaction.Begin(LOCTEXT("MeshDragTransaction", "Mesh drag transaction"));
 	}
 
 	FVector Drag(ForceInitToZero);
@@ -215,14 +270,27 @@ void UMeshGeoData::SaveStatus()
 
 bool FMeshEditorEditorMode::StartTracking(FEditorViewportClient* InViewportClient, FViewport* InViewport)
 {
-	DragTransaction.Begin(LOCTEXT("MeshDragTransaction", "Mesh drag transaction"));
-	return true;
+	UE_LOG(LogTemp, Display, TEXT("StartTracking. "));
+	// DragTransaction.Begin(LOCTEXT("MeshDragTransaction", "Mesh drag transaction"));
+
+	if (AxisDragger != nullptr && AxisDragger->GetCurrentAxisType() != EAxisList::Type::None)
+	{
+		return true;
+	}
+	return false;
 }
 
 bool FMeshEditorEditorMode::EndTracking(FEditorViewportClient* InViewportClient, FViewport* InViewport)
 {
-	DragTransaction.End();
-	return true;
+	UE_LOG(LogTemp, Display, TEXT("EndTracking. "));
+
+	if (bIsTracking)
+	{
+		DragTransaction.End();
+		bIsTracking = false;
+		return true;
+	}
+	return false;
 }
 
 
@@ -278,9 +346,10 @@ void FMeshEditorEditorMode::UpdateSelection()
 bool FMeshEditorEditorMode::InputKey(FEditorViewportClient* ViewportClient, FViewport* Viewport, FKey Key,
                                      EInputEvent Event)
 {
+	UE_LOG(LogTemp, Display, TEXT("InputKey. "));
+
 	const int32 HitX = Viewport->GetMouseX();
 	const int32 HitY = Viewport->GetMouseY();
-
 	HHitProxy* HitProxy = Viewport->GetHitProxy(HitX, HitY);
 	if (HitProxy != nullptr && HitProxy->IsA(HAxisDraggerProxy::StaticGetType()))
 	{
@@ -288,23 +357,15 @@ bool FMeshEditorEditorMode::InputKey(FEditorViewportClient* ViewportClient, FVie
 
 		if (Event == IE_Pressed)
 		{
-			UE_LOG(LogTemp, Warning, TEXT("MeshEditorEditorMode - IE_Pressed() "));
+			UE_LOG(LogTemp, Display, TEXT("InputKey - IE_Pressed. "));
 			AxisDragger->SetCurrentAxis(AWProxy->Axis, AWProxy->bFlipped);
 			AxisDragger->ResetInitialTranslationOffset();
 			ViewportClient->SetCurrentWidgetAxis(EAxisList::Type::None);
-			// GEditor->BeginTransaction(LOCTEXT("TransformMesh", "Transform Mesh"));
-			// CurrentMeshData->SaveStatus();
-			// CurrentMeshData->Modify();
-			// GEditor->EndTransaction();
 		}
 		else if (Event == IE_Released)
 		{
-			UE_LOG(LogTemp, Warning, TEXT("MeshEditorEditorMode - IE_Released() "));
+			UE_LOG(LogTemp, Display, TEXT("InputKey - IE_Released. "));
 			AxisDragger->SetCurrentAxis(EAxisList::None);
-			// GEditor->BeginTransaction(LOCTEXT("TransformMesh", "Transform Mesh"));
-			// CurrentMeshData->SaveStatus();
-			// CurrentMeshData->Modify();
-			// GEditor->EndTransaction();
 		}
 	}
 	return false;
@@ -313,6 +374,7 @@ bool FMeshEditorEditorMode::InputKey(FEditorViewportClient* ViewportClient, FVie
 bool FMeshEditorEditorMode::InputDelta(FEditorViewportClient* InViewportClient, FViewport* InViewport, FVector& InDrag,
                                        FRotator& InRot, FVector& InScale)
 {
+	UE_LOG(LogTemp, Display, TEXT("InputDelta. "));
 	if (HandleAxisWidgetDelta(InViewportClient, InDrag, InRot, InScale))
 	{
 		return true;
@@ -353,6 +415,32 @@ FVector FMeshEditorEditorMode::GetWidgetLocation() const
 	return FEdMode::GetWidgetLocation();
 }
 
+FVector2D FMeshEditorEditorMode::GetMouseVector2D()
+{
+	return FVector2D{
+		GEditor->GetActiveViewport()->GetMouseX() / DPIScale, GEditor->GetActiveViewport()->GetMouseY() / DPIScale
+	};
+}
+
+void FMeshEditorEditorMode::CollectCursorData(const FSceneView* InSceneView)
+{
+	bIsMouseMove = GetMouseVector2D() != MouseOnScreenPosition;
+	MouseOnScreenPosition = GetMouseVector2D();
+
+	FVector MouseWorldPosition;
+	FVector CameraDirection;
+	InSceneView->DeprojectFVector2D(MouseOnScreenPosition, MouseWorldPosition, CameraDirection);
+
+	FCollisionQueryParams TraceQueryParams;
+	TraceQueryParams.bTraceComplex = true;
+
+	FHitResult HitResult;
+	GetWorld()->LineTraceSingleByChannel(HitResult, MouseWorldPosition,
+	                                     MouseWorldPosition + (CameraDirection * 10000000), ECC_Visibility,
+	                                     TraceQueryParams);
+
+	// MouseInWorld = HitResult.ImpactPoint;
+}
 
 void FMeshEditorEditorMode::CollectPressedKeysData(const FViewport* InViewport)
 {
@@ -398,6 +486,38 @@ void FMeshEditorEditorMode::Render(const FSceneView* View, FViewport* Viewport, 
 	const auto EditorViewportClient = static_cast<FEditorViewportClient*>(Viewport->GetClient());
 	if (EditorViewportClient)
 	{
+		const UMeshEditorSettings* Settings{UMeshEditorSettings::Get()};
+		const bool bIsPerspectiveView{EditorViewportClient->IsPerspective()};
+		const FVector EditorCameraLocation = EditorViewportClient->GetViewLocation();
+
+		// Draw edges
+		for (int i = 0; i < LastCapturedEdgeData.Num(); i ++)
+		{
+			{
+				const FMeshEdgeData& EdgeData{LastCapturedEdgeData[i]};
+
+				FVector FirstEndpointLocation{EdgeData.FirstEndpointInWorldPosition};
+				FVector SecondEndpointLocation{EdgeData.SecondEndpointInWorldPosition};
+
+				if (bIsPerspectiveView)
+				{
+					//	Draw the sprite with a slight offset towards the camera to avoid gaps in the geometry
+					FirstEndpointLocation += (EditorCameraLocation - EdgeData.FirstEndpointInWorldPosition).
+						GetSafeNormal() * 3;
+					SecondEndpointLocation += (EditorCameraLocation - EdgeData.SecondEndpointInWorldPosition).
+						GetSafeNormal() * 3;
+				}
+
+				HMeshEdgeProxy* HitResult = new HMeshEdgeProxy(
+					EdgeData.FirstEndpointInWorldPosition, EdgeData.SecondEndpointInWorldPosition,
+					EdgeData.EdgeOwnerActor);
+
+				PDI->SetHitProxy(HitResult);
+				PDI->DrawLine(FirstEndpointLocation, SecondEndpointLocation, Settings->MeshEdgeColor,
+				              SDPG_World, Settings->MeshEdgeThickness);
+			}
+		}
+
 		// Draw bracket box for selected actors
 		for (int k = CurrentMeshData->SelectedActors.Num() - 1; k >= 0; k --)
 		{
@@ -416,6 +536,19 @@ void FMeshEditorEditorMode::Render(const FSceneView* View, FViewport* Viewport, 
 	}
 	GEngine->AddOnScreenDebugMessage(-1, 0.f, FColor::Red, "This message must be of a certain length", true,
 	                                 FVector2D::ZeroVector);
+}
+
+void FMeshEditorEditorMode::DrawHUD(FEditorViewportClient* ViewportClient, FViewport* Viewport, const FSceneView* View,
+                                    FCanvas* Canvas)
+{
+	FEdMode::DrawHUD(ViewportClient, Viewport, View, Canvas);
+
+	if (bPreviousDroppingPreview)
+	{
+		return;
+	}
+
+	DPIScale = Canvas->GetDPIScale();
 }
 
 void FMeshEditorEditorMode::DrawBoxDraggerForStaticMeshActor(FPrimitiveDrawInterface* PDI, const FSceneView* View,
@@ -598,6 +731,185 @@ void FMeshEditorEditorMode::DrawDraggerForMeshComp(FPrimitiveDrawInterface* PDI,
 	{
 		AxisDragger->RenderAxis(PDI, View, CompTransform, AxisBases[BaseIndex], AxisDir[BaseIndex], AxisFlip[BaseIndex],
 		                        true);
+	}
+}
+
+void FMeshEditorEditorMode::CollectingMeshDataFinished()
+{
+	LastCapturedEdgeData = CapturedEdgeData;
+	bDataCollectionInProgress = false;
+
+	if (bIsModeOn)
+	{
+		AsyncCollectMeshData();
+	}
+}
+
+struct DistanceCMP
+{
+	DistanceCMP(FVector InTarget): Target(InTarget)
+	{
+	}
+
+	FORCEINLINE bool operator()(const FVector& A, const FVector& B) const
+	{
+		return FVector::Distance(Target, A) > FVector::Distance(Target, B);
+	}
+
+	FVector Target;
+};
+
+// TODO remove ComputeMostKAdjacentVertics
+void ComputeMostKAdjacentVertics(uint32 K, uint32 ComparedIndex, FVector Target,
+                                 UPrimitiveComponent* PrimitiveComponent,
+                                 TArray<FVector>& OutAdjacentVertices)
+{
+	TArray<FVector> Heap;
+	TSharedPtr<FMeshDataIterators::FVertexIterator> VertexGetter =
+		FMeshDataIterators::MakeVertexIterator(PrimitiveComponent);
+	if (VertexGetter.IsValid())
+	{
+		FMeshDataIterators::FVertexIterator& VertexGetterRef = *VertexGetter;
+		uint32 i = 0;
+		for (; VertexGetterRef; ++VertexGetterRef, i ++)
+		{
+			if (i == ComparedIndex)
+			{
+				continue;
+			}
+			Heap.Emplace(VertexGetterRef.Position());
+		}
+
+		uint32 TotalVertex = Heap.Num();
+		Heap.Heapify(DistanceCMP(Target));
+		for (uint32 j = 0; j < K && j < TotalVertex; j ++)
+		{
+			FVector V;
+			Heap.HeapPop(V, DistanceCMP(Target));
+			OutAdjacentVertices.Add(V);
+		}
+	}
+}
+
+void FMeshEditorEditorMode::AsyncCollectMeshData()
+{
+	if (bDataCollectionInProgress)
+	{
+		return;
+	}
+
+	if (!EdModeView)
+	{
+		return;
+	}
+
+	TWeakPtr<FMeshEditorEditorMode> WeakThisPtr{SharedThis(this)};
+	AsyncTask(ENamedThreads::AnyBackgroundThreadNormalTask, [WeakThisPtr]()
+	{
+		FMeshEditorEditorMode* ThisBackgroundThread{WeakThisPtr.Pin().Get()};
+		if (!ThisBackgroundThread)
+		{
+			return;
+		}
+
+		ThisBackgroundThread->bDataCollectionInProgress = true;
+		ThisBackgroundThread->CapturedEdgeData.Empty();
+
+		//	Filter visible actors // TODO remove
+		auto ActorWasRendered = [](const AActor* InActor)
+		{
+			return InActor && InActor->WasRecentlyRendered();
+		};
+
+		TArray<AStaticMeshActor*> ActorsOnScreen{};
+		USelection* CurrentEditorSelection = GEditor->GetSelectedActors();
+		CurrentEditorSelection->GetSelectedObjects<AStaticMeshActor>(ActorsOnScreen);
+
+		for (int i = 0; i < ActorsOnScreen.Num(); ++i)
+		{
+			//	Take one hundred closest actors and collect data on their vertices
+			const AActor* CurrentActor = ActorsOnScreen[i];
+
+			// TODO remove
+			if (!CurrentActor->IsA(AStaticMeshActor::StaticClass()))
+			{
+				continue;
+			}
+
+			TInlineComponentArray<UStaticMeshComponent*> PrimitiveComponents;
+			CurrentActor->GetComponents<UStaticMeshComponent>(PrimitiveComponents);
+
+			for (UStaticMeshComponent* PrimitiveComponent : PrimitiveComponents)
+			{
+				// Skip sky sphere
+				if (IsValid(PrimitiveComponent))
+				{
+					TObjectPtr<UStaticMesh> StaticMesh = PrimitiveComponent->GetStaticMesh();
+					if (StaticMesh.Get())
+					{
+						FString StrStaticMeshName = StaticMesh->GetName();
+						if (StrStaticMeshName.Contains("SkySphere"))
+						{
+							continue;
+						}
+					}
+
+					// Check selection
+					// TODO remove selection check
+					AActor* Owner = PrimitiveComponent->GetOwner();
+					TSharedPtr<FMeshDataIterators::FEdgeIterator> EdgeGetter =
+						FMeshDataIterators::MakeEdgeIterator(PrimitiveComponent);
+					// Collect edges
+					if ((Owner != nullptr && Owner->IsSelected() || PrimitiveComponent->IsSelected()) &&
+						EdgeGetter.IsValid())
+					{
+						FMeshDataIterators::FEdgeIterator& EdgeGetterRef = *EdgeGetter;
+						for (; EdgeGetterRef; ++EdgeGetterRef)
+						{
+							FVector2D FirstVertexOnScreen{};
+							ThisBackgroundThread->EdModeView->WorldToPixel(
+								EdgeGetterRef.FirstEndpoint(), FirstVertexOnScreen);
+							FirstVertexOnScreen /= ThisBackgroundThread->DPIScale;
+
+							FVector2D SecondVertexOnScreen{};
+							ThisBackgroundThread->EdModeView->WorldToPixel(
+								EdgeGetterRef.SecondEndpoint(), SecondVertexOnScreen);
+							SecondVertexOnScreen /= ThisBackgroundThread->DPIScale;
+
+							FMeshEdgeData CapturedEdgeData;
+							CapturedEdgeData.EdgeOwnerActor = PrimitiveComponent->GetOwner();
+							CapturedEdgeData.FirstEndpointInWorldPosition = EdgeGetterRef.FirstEndpoint();
+							CapturedEdgeData.FirstEndpointOnScreenPosition = FirstVertexOnScreen;
+
+							CapturedEdgeData.SecondEndpointInWorldPosition = EdgeGetterRef.SecondEndpoint();
+							CapturedEdgeData.SecondEndpointOnScreenPosition = SecondVertexOnScreen;
+
+
+							ThisBackgroundThread->CapturedEdgeData.Add(CapturedEdgeData);
+						}
+					}
+				}
+			}
+		}
+
+		// Algo::Sort(ThisBackgroundThread->CapturedEdgeData);
+
+		AsyncTask(ENamedThreads::GameThread, [WeakThisPtr]()
+		{
+			const FMeshEditorEditorMode* ThisGameThread{WeakThisPtr.Pin().Get()};
+			if (ThisGameThread)
+			{
+				ThisGameThread->OnCollectingDataFinished.ExecuteIfBound();
+			}
+		});
+	});
+}
+
+void FMeshEditorEditorMode::InvalidateHitProxies()
+{
+	if (bIsMouseMove)
+	{
+		GEditor->GetActiveViewport()->InvalidateHitProxy();
 	}
 }
 

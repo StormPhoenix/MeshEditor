@@ -44,6 +44,7 @@ public class MeshEditor : ModuleRules
 				"UnrealEd",
 				"LevelEditor",
 				"InteractiveToolsFramework",
+				"DeveloperSettings",
 				"Projects",
 				"EditorInteractiveToolsFramework",
 				"TypedElementRuntime"

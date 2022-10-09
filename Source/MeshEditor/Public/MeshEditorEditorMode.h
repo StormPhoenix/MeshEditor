@@ -8,6 +8,17 @@
 #include "Dragger/DragTransaction.h"
 #include "MeshEditorEditorMode.generated.h"
 
+DECLARE_DELEGATE(FOnCollectingMeshDataFinished);
+
+struct FMeshEdgeData
+{
+	FVector FirstEndpointInWorldPosition{};
+	FVector SecondEndpointInWorldPosition{};
+	FVector2D FirstEndpointOnScreenPosition{};
+	FVector2D SecondEndpointOnScreenPosition{};
+	AActor* EdgeOwnerActor{nullptr};
+};
+
 UCLASS()
 class UMeshGeoData : public UObject
 {
@@ -46,6 +57,8 @@ public:
 	virtual bool InputDelta(FEditorViewportClient* InViewportClient, FViewport* InViewport, FVector& InDrag,
 	                        FRotator& InRot, FVector& InScale) override;
 	virtual void Render(const FSceneView* View, FViewport* Viewport, FPrimitiveDrawInterface* PDI) override;
+	virtual void DrawHUD(FEditorViewportClient* ViewportClient, FViewport* Viewport, const FSceneView* View,
+					 FCanvas* Canvas) override;
 
 	virtual void Tick(FEditorViewportClient* ViewportClient, float DeltaTime) override;
 
@@ -57,11 +70,17 @@ public:
 
 	virtual bool EndTracking(FEditorViewportClient* InViewportClient, FViewport* InViewport) override;
 
-	bool bIsModeOn{false};
+	void AsyncCollectMeshData();
+
+	void CollectingMeshDataFinished();
+
+	void InvalidateHitProxies();
 
 private:
 	void EraseDroppingPreview();
 
+	void CollectCursorData(const FSceneView* InSceneView);
+	
 	void CollectPressedKeysData(const FViewport* InViewport);
 
 	void DrawBoxDraggerForStaticMeshActor(FPrimitiveDrawInterface* PDI, const FSceneView* View, FViewport* Viewport,
@@ -76,6 +95,16 @@ private:
 	void UpdateSelection();
 
 	void UpdateInitialSelection();
+
+	FVector2D GetMouseVector2D();
+
+public:
+	TArray<FMeshEdgeData> LastCapturedEdgeData;
+	TArray<FMeshEdgeData> CapturedEdgeData;
+	FOnCollectingMeshDataFinished OnCollectingDataFinished{};
+	FTimerHandle CollectVerticesTimerHandle{};
+	FTimerHandle InvalidateHitProxiesTimerHandle{};
+	bool bIsModeOn{false};
 	
 private:
 	FAxisDragger* AxisDragger;
@@ -84,6 +113,12 @@ private:
 
 	bool bPreviousDroppingPreview{false};
 	bool bIsLeftMouseButtonDown{false};
+	bool bDataCollectionInProgress{false};
+	bool bIsMouseMove{false};
+	bool bIsTracking = false;
+
+	float DPIScale{1.f};
+	FVector2D MouseOnScreenPosition{};
 
 	UMeshGeoData* CurrentMeshData{nullptr};
 };
