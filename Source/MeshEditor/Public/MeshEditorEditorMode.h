@@ -98,6 +98,12 @@ private:
 
 	FVector2D GetMouseVector2D();
 
+	bool HandleEdgeClickEvent(FEditorViewportClient* InViewportClient, HHitProxy* HitProxy,
+										const FViewportClick& Click);
+	
+	bool HandlePrefabClickEvent(FEditorViewportClient* InViewportClient, HHitProxy* HitProxy,
+										const FViewportClick& Click);
+
 public:
 	TArray<FMeshEdgeData> LastCapturedEdgeData;
 	TArray<FMeshEdgeData> CapturedEdgeData;
@@ -116,6 +122,7 @@ private:
 	bool bDataCollectionInProgress{false};
 	bool bIsMouseMove{false};
 	bool bIsTracking = false;
+	bool bIsCtrlKeyDown = {false};
 
 	float DPIScale{1.f};
 	FVector2D MouseOnScreenPosition{};

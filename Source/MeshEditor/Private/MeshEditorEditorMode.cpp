@@ -13,6 +13,11 @@
 #include "Tools/MeshEditorInteractiveTool.h"
 #include "Helper/MeshDataIterators.h"
 
+#define USING_PREFAB_PLUGIN
+#ifdef USING_PREFAB_PLUGIN
+#include "Prefab/PrefabActor.h"
+#endif
+
 #define LOCTEXT_NAMESPACE "MeshEditorEditorMode"
 
 struct HMeshEdgeProxy : public HHitProxy
@@ -117,6 +122,16 @@ void FMeshEditorEditorMode::Exit()
 	CurrentMeshData->EraseSelection();
 	delete AxisDragger;
 
+#ifdef USING_PREFAB_PLUGIN
+	for (TWeakObjectPtr<APrefabActor> PrefabPtr : APrefabActor::PrefabContainer)
+	{
+		if (PrefabPtr.Get())
+		{
+			PrefabPtr->AttachAllSubActors();
+		}
+	}	
+#endif
+	
 	FEdMode::Exit();
 }
 
@@ -125,11 +140,9 @@ FVector BlendPositions(FVector Pos1, FVector Pos2, float factor = 1.0)
 	return Pos1;
 }
 
-bool FMeshEditorEditorMode::HandleClick(FEditorViewportClient* InViewportClient, HHitProxy* HitProxy,
-                                        const FViewportClick& Click)
+bool FMeshEditorEditorMode::HandleEdgeClickEvent(FEditorViewportClient* InViewportClient, HHitProxy* HitProxy,
+                                                 const FViewportClick& Click)
 {
-	bool bEdgeClickHandle{false};
-
 #ifdef WITH_EDITOR
 	if (HitProxy)
 	{
@@ -150,12 +163,111 @@ bool FMeshEditorEditorMode::HandleClick(FEditorViewportClient* InViewportClient,
 				Actor->SetPivotOffset(NewPivotTransform.GetRelativeTransform(Actor->GetActorTransform()).GetLocation());
 				GUnrealEd->UpdatePivotLocationForSelection(true);
 			}
-			bEdgeClickHandle = true;
+			return true;
 		}
 	}
 #endif
+	return false;
+}
 
-	return bEdgeClickHandle;
+
+bool FMeshEditorEditorMode::HandlePrefabClickEvent(FEditorViewportClient* InViewportClient, HHitProxy* HitProxy,
+                                                   const FViewportClick& Click)
+{
+	bool bPrefabHandle = false;
+#ifdef USING_PREFAB_PLUGIN
+#ifdef WITH_EDITOR
+	{
+		if (HitProxy != nullptr && HitProxy->IsA(HActor::StaticGetType()))
+		{
+			HActor* ActorHitProxy = (HActor*)HitProxy;
+			AActor* ConsideredActor = ActorHitProxy->Actor;
+
+			if (ConsideredActor != nullptr)
+			{
+				APrefabActor* FatherPrefabPtr = nullptr;
+				AActor* SonActorPtr = nullptr;
+
+				// 首先检查当前选中的 Actor 属于哪一个 PrefabActor
+				for (TWeakObjectPtr<APrefabActor> PrefabPtr : APrefabActor::PrefabContainer)
+				{
+					if (PrefabPtr.Get() && PrefabPtr->bSubActorSetInit && PrefabPtr->SubActorSet.Contains(
+						ConsideredActor))
+					{
+						FatherPrefabPtr = PrefabPtr.Get();
+						SonActorPtr = ConsideredActor;
+					}
+				}
+
+				if (FatherPrefabPtr != nullptr && SonActorPtr != nullptr)
+				{
+					if (Click.GetEvent() == IE_DoubleClick)
+					{
+						// 处理双击全选事件
+						if (!bIsCtrlKeyDown)
+						{
+							// 取消选中其他 Actor
+							USelection* Selection = GEditor->GetSelectedActors();
+							TArray<AActor*> SelectedActors;
+							Selection->GetSelectedObjects(SelectedActors);
+							for (AActor* SelectedActor : SelectedActors)
+							{
+								GEditor->SelectActor(SelectedActor, false, true);
+							}
+
+							// 取消选中其他 PrefabActor
+							for (TWeakObjectPtr<APrefabActor> OtherPrefabPtr : APrefabActor::PrefabContainer)
+							{
+								if (OtherPrefabPtr.Get() && OtherPrefabPtr.Get() != FatherPrefabPtr)
+								{
+									OtherPrefabPtr->DeselectSubActors();
+									OtherPrefabPtr->DeselectSelf();
+								}
+							}
+						}
+						FatherPrefabPtr->SelectSelf();
+						bPrefabHandle = true;
+					}
+					else
+					{
+						// 处理单击事件
+						FatherPrefabPtr->DeselectSelf();
+						if (bIsCtrlKeyDown)
+						{
+							bool bInSelected = !SonActorPtr->IsSelected();
+							GEditor->SelectActor(SonActorPtr, bInSelected, true, true, true);
+							// bPrefabHandle = true;
+							bPrefabHandle = true;
+						}
+						else
+						{
+							// Just single-one click
+							// GEditor->SelectActor(SonActorPtr, true, true, true, true);
+							bPrefabHandle = false;
+						}
+					}
+				}
+			}
+		}
+	}
+#endif
+#endif
+	return bPrefabHandle;
+}
+
+
+bool FMeshEditorEditorMode::HandleClick(FEditorViewportClient* InViewportClient, HHitProxy* HitProxy,
+                                        const FViewportClick& Click)
+{
+	bool bEdgeClickHandle = false;
+	bool bPrefabClickHandle = false;
+	
+	bEdgeClickHandle = HandleEdgeClickEvent(InViewportClient, HitProxy, Click);
+	if (!bEdgeClickHandle)
+	{
+		bPrefabClickHandle = HandlePrefabClickEvent(InViewportClient, HitProxy, Click);
+	}
+	return bEdgeClickHandle || bPrefabClickHandle;
 }
 
 float ComputeScaleFactor(FVector& Base, FVector& DragDelta, int Axis)
@@ -270,9 +382,7 @@ void UMeshGeoData::SaveStatus()
 
 bool FMeshEditorEditorMode::StartTracking(FEditorViewportClient* InViewportClient, FViewport* InViewport)
 {
-	UE_LOG(LogTemp, Display, TEXT("StartTracking. "));
 	// DragTransaction.Begin(LOCTEXT("MeshDragTransaction", "Mesh drag transaction"));
-
 	if (AxisDragger != nullptr && AxisDragger->GetCurrentAxisType() != EAxisList::Type::None)
 	{
 		return true;
@@ -282,8 +392,6 @@ bool FMeshEditorEditorMode::StartTracking(FEditorViewportClient* InViewportClien
 
 bool FMeshEditorEditorMode::EndTracking(FEditorViewportClient* InViewportClient, FViewport* InViewport)
 {
-	UE_LOG(LogTemp, Display, TEXT("EndTracking. "));
-
 	if (bIsTracking)
 	{
 		DragTransaction.End();
@@ -374,7 +482,6 @@ bool FMeshEditorEditorMode::InputKey(FEditorViewportClient* ViewportClient, FVie
 bool FMeshEditorEditorMode::InputDelta(FEditorViewportClient* InViewportClient, FViewport* InViewport, FVector& InDrag,
                                        FRotator& InRot, FVector& InScale)
 {
-	UE_LOG(LogTemp, Display, TEXT("InputDelta. "));
 	if (HandleAxisWidgetDelta(InViewportClient, InDrag, InRot, InScale))
 	{
 		return true;
@@ -445,7 +552,7 @@ void FMeshEditorEditorMode::CollectCursorData(const FSceneView* InSceneView)
 void FMeshEditorEditorMode::CollectPressedKeysData(const FViewport* InViewport)
 {
 	// TODO remove
-	// bIsCtrlKeyDown = InViewport->KeyState(EKeys::LeftControl) || InViewport->KeyState(EKeys::RightControl);
+	bIsCtrlKeyDown = InViewport->KeyState(EKeys::LeftControl) || InViewport->KeyState(EKeys::RightControl);
 	// bIsShiftKeyDown = InViewport->KeyState(EKeys::LeftShift) || InViewport->KeyState(EKeys::RightShift);
 	// bIsAltKeyDown = InViewport->KeyState(EKeys::LeftAlt) || InViewport->KeyState(EKeys::RightAlt);
 	bIsLeftMouseButtonDown = InViewport->KeyState(EKeys::LeftMouseButton);

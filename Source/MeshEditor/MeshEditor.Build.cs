@@ -47,7 +47,8 @@ public class MeshEditor : ModuleRules
 				"DeveloperSettings",
 				"Projects",
 				"EditorInteractiveToolsFramework",
-				"TypedElementRuntime"
+				"TypedElementRuntime",
+				"PrefabricatorRuntime"
 				// ... add private dependencies that you statically link with here ...	
 			}
 			);
