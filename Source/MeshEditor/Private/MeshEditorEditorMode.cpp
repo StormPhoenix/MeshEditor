@@ -121,16 +121,6 @@ void FMeshEditorEditorMode::Exit()
 
 	CurrentMeshData->EraseSelection();
 	delete AxisDragger;
-
-#ifdef USING_PREFAB_PLUGIN
-	for (TWeakObjectPtr<APrefabActor> PrefabPtr : APrefabActor::PrefabContainer)
-	{
-		if (PrefabPtr.Get())
-		{
-			PrefabPtr->AttachAllSubActors();
-		}
-	}	
-#endif
 	
 	FEdMode::Exit();
 }
@@ -186,16 +176,14 @@ bool FMeshEditorEditorMode::HandlePrefabClickEvent(FEditorViewportClient* InView
 			if (ConsideredActor != nullptr)
 			{
 				APrefabActor* FatherPrefabPtr = nullptr;
-				AActor* SonActorPtr = nullptr;
+				AActor* SonActorPtr = ConsideredActor;
 
 				// 首先检查当前选中的 Actor 属于哪一个 PrefabActor
 				for (TWeakObjectPtr<APrefabActor> PrefabPtr : APrefabActor::PrefabContainer)
 				{
-					if (PrefabPtr.Get() && PrefabPtr->bSubActorSetInit && PrefabPtr->SubActorSet.Contains(
-						ConsideredActor))
+					if (PrefabPtr.Get() && SonActorPtr->IsAttachedTo(PrefabPtr.Get()))
 					{
-						FatherPrefabPtr = PrefabPtr.Get();
-						SonActorPtr = ConsideredActor;
+						FatherPrefabPtr = PrefabPtr.Get();		
 					}
 				}
 
