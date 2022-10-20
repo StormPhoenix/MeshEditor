@@ -14,7 +14,7 @@ class FMeshEditorModule : public IModuleInterface
 {
 public:
 	TSharedPtr<FUICommandList> MeshEditorActions;
-	
+
 	/** IModuleInterface implementation */
 	virtual void StartupModule() override;
 	virtual void ShutdownModule() override;

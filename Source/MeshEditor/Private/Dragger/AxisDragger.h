@@ -2,6 +2,7 @@
 
 #include "CoreMinimal.h"
 #include "HitProxies.h"
+#include "Engine/StaticMeshActor.h"
 #include "UObject/GCObject.h"
 
 struct FMovementParams
@@ -31,13 +32,20 @@ struct FMovementParams
 	bool bPositionSnapping;
 };
 
+struct FGroupMeshInfo
+{
+	TArray<FVector> GroupBaseVerts;
+	TArray<TWeakObjectPtr<AStaticMeshActor>> GroupMeshArray;
+	TArray<TArray<FVector>> EachMeshBaseVerts;
+};
+
 class FAxisDragger : public FGCObject
 {
 public:
 	FAxisDragger();
 
-	void RenderAxis(FPrimitiveDrawInterface* PDI, const FSceneView* View, FTransform& InTransform,
-	                const FVector& InLocation, EAxisList::Type InAxis, bool bFlipped, bool bCubeHead = false);
+	void RenderAxis(FPrimitiveDrawInterface* PDI, const FSceneView* View, const FVector& InLocation,
+	                EAxisList::Type InAxis, bool bFlipped, bool bCubeHead = false);
 
 	virtual void AddReferencedObjects(FReferenceCollector& Collector) override;
 
@@ -68,20 +76,22 @@ public:
 
 	FVector GetOppositeAxisBaseVertex() const;
 
-	void SetTransform(const FTransform& InTransform)
-	{
-		WidgetTransform = InTransform;
-	}
-
 	const FTransform& GetTransform() const
 	{
 		return WidgetTransform;
 	}
 
-	void SetMeshActor(TWeakObjectPtr<AStaticMeshActor> InActor)
+	void UpdateControlledMesh(TWeakObjectPtr<AStaticMeshActor> InActor)
 	{
 		MeshActorPtr = InActor;
+		GroupMeshInfo.GroupMeshArray.Empty();
+		GroupMeshInfo.EachMeshBaseVerts.Empty();
+		WidgetTransform = MeshActorPtr->GetActorTransform();
 	}
+
+	void UpdateControlledMeshGroup(TArray<TWeakObjectPtr<AStaticMeshActor>> InActors);
+
+	FVector GetMeshBaseVertex(int MeshIndex) const;
 
 	TWeakObjectPtr<AStaticMeshActor> GetMeshActor()
 	{
@@ -96,13 +106,39 @@ public:
 		bAbsoluteTranslationInitialOffsetCached = false;
 	}
 
+	bool IsGroupDragger() const
+	{
+		if (!MeshActorPtr.Get() && GroupMeshInfo.GroupMeshArray.Num() > 1)
+		{
+			return true;
+		}
+		else
+		{
+			return false;
+		}
+	}
+
+	bool IsMeshDragger() const
+	{
+		if (MeshActorPtr.Get() && GroupMeshInfo.GroupMeshArray.Num() <= 0)
+		{
+			return true;
+		}
+		else
+		{
+			return false;
+		}
+	}
+
+	FGroupMeshInfo& GetGroupMeshInfo()
+	{
+		return GroupMeshInfo;
+	}
+
 private:
-	void AbsoluteTranslationConvertMouseMovementToAxisMovement(const FSceneView* InView,
-	                                                           FEditorViewportClient* InViewportClient,
-	                                                           const FVector& InLocation,
-	                                                           const FVector2D& InMousePosition,
-	                                                           FVector& OutDrag, FRotator& OutRotation,
-	                                                           FVector& OutScale);
+	void AbsoluteTranslationConvertMouseMovementToAxisMovement(
+		const FSceneView* InView, FEditorViewportClient* InViewportClient, const FVector& InLocation,
+		const FVector2D& InMousePosition, FVector& OutDrag, FRotator& OutRotation, FVector& OutScale);
 
 	FVector GetAbsoluteTranslationDelta(const FMovementParams& InParams);
 
@@ -115,6 +151,8 @@ private:
 
 	FVector GetAbsoluteTranslationInitialOffset(const FVector& InNewPosition, const FVector& InCurrentPosition);
 
+	FVector GetMeshBaseVertex(const TArray<FVector>& InBaseVerts) const;
+
 private:
 	UMaterialInstanceDynamic* AxisMaterial;
 	UMaterialInstanceDynamic* CurrentAxisMaterial;
@@ -126,6 +164,8 @@ private:
 
 	TArray<FVector> BaseVerts;
 	TWeakObjectPtr<AStaticMeshActor> MeshActorPtr;
+
+	FGroupMeshInfo GroupMeshInfo;
 
 	bool bAbsoluteTranslationInitialOffsetCached;
 	FVector InitialTranslationOffset;

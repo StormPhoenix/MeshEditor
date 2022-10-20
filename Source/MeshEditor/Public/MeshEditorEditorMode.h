@@ -27,12 +27,12 @@ public:
 	void EraseSelection();
 
 	void SaveStatus();
-	
+
 public:
 	UPROPERTY()
 	TArray<AActor*> SelectedActors;
 	// TArray<TWeakObjectPtr<AActor>> SelectedActors;
-	
+
 	UPROPERTY()
 	FVector SelectedLocation{FVector::ZeroVector};
 };
@@ -43,7 +43,7 @@ public:
 	const static FEditorModeID EM_MeshEditorEditorModeId;
 
 	FMeshEditorEditorMode();
-	virtual ~FMeshEditorEditorMode();
+	virtual ~FMeshEditorEditorMode() override;
 
 	virtual void Enter() override;
 	virtual void Exit() override;
@@ -52,20 +52,22 @@ public:
 	                         const FViewportClick& Click) override;
 	virtual bool HandleAxisWidgetDelta(FEditorViewportClient* InViewportClient, const FVector& InDrag,
 	                                   const FRotator& InRot, const FVector& InScale);
+	virtual bool HandleAttachMovement(FEditorViewportClient* InViewportClient, const FVector& InDrag,
+	                                  const FRotator& InRot, const FVector& InScale);
 	virtual bool InputKey(FEditorViewportClient* ViewportClient, FViewport* Viewport, FKey Key,
 	                      EInputEvent Event) override;
 	virtual bool InputDelta(FEditorViewportClient* InViewportClient, FViewport* InViewport, FVector& InDrag,
 	                        FRotator& InRot, FVector& InScale) override;
 	virtual void Render(const FSceneView* View, FViewport* Viewport, FPrimitiveDrawInterface* PDI) override;
 	virtual void DrawHUD(FEditorViewportClient* ViewportClient, FViewport* Viewport, const FSceneView* View,
-					 FCanvas* Canvas) override;
+	                     FCanvas* Canvas) override;
 
 	virtual void Tick(FEditorViewportClient* ViewportClient, float DeltaTime) override;
 
 	virtual FVector GetWidgetLocation() const override;
 
 	virtual void ActorSelectionChangeNotify() override;
-	
+
 	virtual bool StartTracking(FEditorViewportClient* InViewportClient, FViewport* InViewport) override;
 
 	virtual bool EndTracking(FEditorViewportClient* InViewportClient, FViewport* InViewport) override;
@@ -76,21 +78,22 @@ public:
 
 	void InvalidateHitProxies();
 
+	bool IsInAttachMovementMode();
+
 private:
 	void EraseDroppingPreview();
 
 	void CollectCursorData(const FSceneView* InSceneView);
-	
+
 	void CollectPressedKeysData(const FViewport* InViewport);
 
-	void DrawBoxDraggerForStaticMeshActor(FPrimitiveDrawInterface* PDI, const FSceneView* View, FViewport* Viewport,
-										  TWeakObjectPtr<AStaticMeshActor> MeshActorPtr);
+	void DrawBoxDraggerForStaticMeshActors(FPrimitiveDrawInterface* PDI, const FSceneView* View, FViewport* Viewport,
+	                                       TArray<TWeakObjectPtr<AStaticMeshActor>>& MeshActorArray);
 
-	void DrawBracketForMeshComp(FPrimitiveDrawInterface* PDI, const UStaticMeshComponent* InMeshComp,
-								TArray<FVector>& OutVerts);
+	void DrawDragger(FPrimitiveDrawInterface* PDI, const FSceneView* View,
+	                            FViewport* Viewport, const TArray<FVector>& InCorners);
 
-	void DrawDraggerForMeshComp(FPrimitiveDrawInterface* PDI, const FSceneView* View, FViewport* Viewport,
-								const UStaticMeshComponent* InMeshComp, const TArray<FVector>& InCorners);
+	void DrawBracket(FPrimitiveDrawInterface* PDI, FViewport* Viewport, TArray<FVector>& OutVerts);
 
 	void UpdateSelection();
 
@@ -99,10 +102,10 @@ private:
 	FVector2D GetMouseVector2D();
 
 	bool HandleEdgeClickEvent(FEditorViewportClient* InViewportClient, HHitProxy* HitProxy,
-										const FViewportClick& Click);
-	
+	                          const FViewportClick& Click);
+
 	bool HandlePrefabClickEvent(FEditorViewportClient* InViewportClient, HHitProxy* HitProxy,
-										const FViewportClick& Click);
+	                            const FViewportClick& Click);
 
 public:
 	TArray<FMeshEdgeData> LastCapturedEdgeData;
@@ -111,7 +114,7 @@ public:
 	FTimerHandle CollectVerticesTimerHandle{};
 	FTimerHandle InvalidateHitProxiesTimerHandle{};
 	bool bIsModeOn{false};
-	
+
 private:
 	FAxisDragger* AxisDragger;
 	const FSceneView* EdModeView;
@@ -123,6 +126,7 @@ private:
 	bool bIsMouseMove{false};
 	bool bIsTracking = false;
 	bool bIsCtrlKeyDown = {false};
+	bool bIsBKeyDown = {false};
 
 	float DPIScale{1.f};
 	FVector2D MouseOnScreenPosition{};

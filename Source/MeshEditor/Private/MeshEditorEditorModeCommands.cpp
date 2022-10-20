@@ -8,7 +8,8 @@
 
 void FMeshEditorEditorModeCommands::RegisterCommands()
 {
-	UI_COMMAND(OpenMeshEditorMode, "Mesh Editor Mode", "On/Off Mesh Editor", EUserInterfaceActionType::ToggleButton, FInputChord(EKeys::Three, EModifierKey::Alt | EModifierKey::Shift));
+	UI_COMMAND(OpenMeshEditorMode, "Mesh Editor Mode", "On/Off Mesh Editor", EUserInterfaceActionType::ToggleButton,
+	           FInputChord(EKeys::Three, EModifierKey::Alt | EModifierKey::Shift));
 }
 
 

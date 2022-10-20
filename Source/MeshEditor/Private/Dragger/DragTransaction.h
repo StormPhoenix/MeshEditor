@@ -18,6 +18,6 @@ struct MESHEDITOR_API FDragTransaction
 
 private:
 	UTypedElementSelectionSet* GetMutableSelectionSet() const;
-	
+
 	class FScopedTransaction* ScopedTransaction = nullptr;
 };

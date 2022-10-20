@@ -57,9 +57,9 @@ void SMeshEditorComboButton::Construct(const FArguments& InArgs)
 			// + SHorizontalBox::Slot()
 			// .AutoWidth()
 			// [
-				// SNew(SBorder)
-				// .Padding(FMargin(1.0f, 0.0f, 0.0f, 0.0f))
-				// .BorderImage(FMeshEditorStyle::Get().GetBrush("MeshEditor.Gray"))
+			// SNew(SBorder)
+			// .Padding(FMargin(1.0f, 0.0f, 0.0f, 0.0f))
+			// .BorderImage(FMeshEditorStyle::Get().GetBrush("MeshEditor.Gray"))
 			// ]
 		]
 	];

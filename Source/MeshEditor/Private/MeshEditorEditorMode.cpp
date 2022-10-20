@@ -18,6 +18,8 @@
 #include "Prefab/PrefabActor.h"
 #endif
 
+// #define HANDLE_DRAW_EDGE
+
 #define LOCTEXT_NAMESPACE "MeshEditorEditorMode"
 
 struct HMeshEdgeProxy : public HHitProxy
@@ -25,13 +27,13 @@ struct HMeshEdgeProxy : public HHitProxy
 	DECLARE_HIT_PROXY()
 
 	HMeshEdgeProxy(FVector InPosition, AActor* InActor)
-		: HHitProxy(HPP_UI), RefVector(InPosition), RefActor(InActor)
+		: HHitProxy(HPP_UI), RefActor(InActor), RefVector(InPosition)
 	{
 	}
 
 	HMeshEdgeProxy(FVector InFirstEndpoint, FVector InSecondEndpoint, AActor* InActor)
-		: HHitProxy(HPP_UI), FirstRefVector(InFirstEndpoint), SecondRefVector(InSecondEndpoint),
-		  RefActor(InActor)
+		: HHitProxy(HPP_UI), RefActor(InActor), FirstRefVector(InFirstEndpoint),
+		  SecondRefVector(InSecondEndpoint)
 	{
 	}
 
@@ -52,7 +54,7 @@ FMeshEditorEditorMode::FMeshEditorEditorMode()
 	FModuleManager::Get().LoadModule("EditorStyle");
 
 	// appearance and icon in the editing mode ribbon can be customized here
-	Info = FEditorModeInfo(FMeshEditorEditorMode::EM_MeshEditorEditorModeId,
+	Info = FEditorModeInfo(EM_MeshEditorEditorModeId,
 	                       LOCTEXT("ModeName", "MeshEditor"),
 	                       FSlateIcon(),
 	                       true);
@@ -121,7 +123,7 @@ void FMeshEditorEditorMode::Exit()
 
 	CurrentMeshData->EraseSelection();
 	delete AxisDragger;
-	
+
 	FEdMode::Exit();
 }
 
@@ -170,7 +172,7 @@ bool FMeshEditorEditorMode::HandlePrefabClickEvent(FEditorViewportClient* InView
 	{
 		if (HitProxy != nullptr && HitProxy->IsA(HActor::StaticGetType()))
 		{
-			HActor* ActorHitProxy = (HActor*)HitProxy;
+			HActor* ActorHitProxy = static_cast<HActor*>(HitProxy);
 			AActor* ConsideredActor = ActorHitProxy->Actor;
 
 			if (ConsideredActor != nullptr)
@@ -183,7 +185,7 @@ bool FMeshEditorEditorMode::HandlePrefabClickEvent(FEditorViewportClient* InView
 				{
 					if (PrefabPtr.Get() && SonActorPtr->IsAttachedTo(PrefabPtr.Get()))
 					{
-						FatherPrefabPtr = PrefabPtr.Get();		
+						FatherPrefabPtr = PrefabPtr.Get();
 					}
 				}
 
@@ -249,8 +251,11 @@ bool FMeshEditorEditorMode::HandleClick(FEditorViewportClient* InViewportClient,
 {
 	bool bEdgeClickHandle = false;
 	bool bPrefabClickHandle = false;
-	
+
+#ifdef HANDLE_DRAW_EDGE
 	bEdgeClickHandle = HandleEdgeClickEvent(InViewportClient, HitProxy, Click);
+#endif
+
 	if (!bEdgeClickHandle)
 	{
 		bPrefabClickHandle = HandlePrefabClickEvent(InViewportClient, HitProxy, Click);
@@ -273,6 +278,67 @@ float ComputeScaleFactor(FVector& Base, FVector& DragDelta, int Axis)
 	return Result;
 }
 
+bool FMeshEditorEditorMode::HandleAttachMovement(FEditorViewportClient* InViewportClient, const FVector& InDrag,
+                                                 const FRotator& InRot, const FVector& InScale)
+{
+	if (InViewportClient == nullptr)
+	{
+		return false;
+	}
+
+	auto World = GetWorld();
+	if (World == nullptr)
+	{
+		return false;
+	}
+
+	if (IsInAttachMovementMode())
+	{
+		FVector2D MousePosition(InViewportClient->Viewport->GetMouseX(), InViewportClient->Viewport->GetMouseY());
+
+		FViewportCursorLocation MouseViewportRay(EdModeView, InViewportClient, MousePosition.X, MousePosition.Y);
+		FVector StartPos = MouseViewportRay.GetOrigin();
+		FVector RayDirection = MouseViewportRay.GetDirection();
+		FVector EndPos = (RayDirection * WORLD_MAX) + StartPos;
+		if (InViewportClient->IsOrtho())
+		{
+			StartPos -= WORLD_MAX * RayDirection;
+		}
+
+		FHitResult HitResult;
+		DrawDebugLine(GetWorld(), StartPos, EndPos, FColor::Red, false, 1, 0, 0.1);
+
+		// TODO 拖拽之前，要求三方向轴都要选中
+
+		FCollisionQueryParams CollisionQueryParams;
+		{
+			// 忽略选中 Actor
+			TArray<AStaticMeshActor*> SelectedActors{};
+			USelection* CurrentSelection = GEditor->GetSelectedActors();
+			CurrentSelection->GetSelectedObjects<AStaticMeshActor>(SelectedActors);
+			for (AActor* SelectedActor : SelectedActors)
+			{
+				CollisionQueryParams.AddIgnoredActor(SelectedActor);
+			}
+		}
+
+		bool bIsHit = World->LineTraceSingleByObjectType(HitResult, StartPos, EndPos, ECC_WorldStatic,
+		                                                 CollisionQueryParams);
+		if (bIsHit && Cast<AActor>(HitResult.GetActor()))
+		{
+			AActor* HitActor = HitResult.GetActor();
+			if (HitActor->IsA(APrefabActor::StaticClass()))
+			{
+				FString ActorName = HitResult.GetActor()->GetActorLabel();
+				GEngine->AddOnScreenDebugMessage(-1, 1.f, FColor::Yellow,
+				                                 FString::Printf(TEXT("%s is hit. "), *ActorName));
+			}
+		}
+	}
+	return false;
+}
+
+
 bool FMeshEditorEditorMode::HandleAxisWidgetDelta(FEditorViewportClient* InViewportClient, const FVector& NotUsed0,
                                                   const FRotator& NotUsed1, const FVector& NotUsed2)
 {
@@ -294,14 +360,14 @@ bool FMeshEditorEditorMode::HandleAxisWidgetDelta(FEditorViewportClient* InViewp
 
 	bool bDragSuccess = true;
 	FVector DragInLocal = AxisDragger->GetTransform().InverseTransformVector(Drag);
-	FVector BaseVertex = AxisDragger->GetOppositeAxisBaseVertex();
+	FVector DraggerBaseVertex = AxisDragger->GetOppositeAxisBaseVertex();
 
 	// Compute scale factors
 	FVector ScaleFactor{1.0f, 1.0f, 1.0f};
 	{
 		FVector AxisBaseVertex = AxisDragger->GetCurrentAxisBaseVertex();
 
-		FVector OriginAxisVec = AxisBaseVertex - BaseVertex;
+		FVector OriginAxisVec = AxisBaseVertex - DraggerBaseVertex;
 		// transform to local space
 		FVector OriginAxisVecInLocal = AxisDragger->GetTransform().InverseTransformVector(OriginAxisVec);
 
@@ -325,23 +391,63 @@ bool FMeshEditorEditorMode::HandleAxisWidgetDelta(FEditorViewportClient* InViewp
 
 	if (bDragSuccess)
 	{
-		TWeakObjectPtr<AStaticMeshActor> MeshActorPtr = AxisDragger->GetMeshActor();
-		if (MeshActorPtr.Get())
+		if (AxisDragger->IsMeshDragger())
 		{
-			FVector OldScale3D = MeshActorPtr->GetActorRelativeScale3D();
-			MeshActorPtr->SetActorRelativeScale3D(ScaleFactor * OldScale3D);
+			TWeakObjectPtr<AStaticMeshActor> MeshActorPtr = AxisDragger->GetMeshActor();
+			if (MeshActorPtr.Get())
+			{
+				FVector OldScale3D = MeshActorPtr->GetActorRelativeScale3D();
+				MeshActorPtr->SetActorRelativeScale3D(ScaleFactor * OldScale3D);
 
-			FVector ActorLocationToBaseVec = MeshActorPtr->GetActorLocation() - BaseVertex;
-			FVector ActorLocationToBaseVecInLocal =
-				AxisDragger->GetTransform().InverseTransformVector(ActorLocationToBaseVec);
-			ActorLocationToBaseVecInLocal *= ScaleFactor;
+				FVector ActorLocationToBaseVec = MeshActorPtr->GetActorLocation() - DraggerBaseVertex;
+				FVector ActorLocationToBaseVecInLocal =
+					AxisDragger->GetTransform().InverseTransformVector(ActorLocationToBaseVec);
+				ActorLocationToBaseVecInLocal *= ScaleFactor;
 
-			FVector FinalOffset = AxisDragger->GetTransform().TransformVector(ActorLocationToBaseVecInLocal);
-			MeshActorPtr->SetActorLocation(BaseVertex + FinalOffset);
-			MeshActorPtr->SetPivotOffset(FVector::ZeroVector);
-			CurrentMeshData->SelectedLocation = MeshActorPtr->GetActorLocation();
-			GUnrealEd->UpdatePivotLocationForSelection(true);
+				FVector FinalOffset = AxisDragger->GetTransform().TransformVector(ActorLocationToBaseVecInLocal);
+				MeshActorPtr->SetActorLocation(DraggerBaseVertex + FinalOffset);
+				MeshActorPtr->SetPivotOffset(FVector::ZeroVector);
+				CurrentMeshData->SelectedLocation = MeshActorPtr->GetActorLocation();
+				GUnrealEd->UpdatePivotLocationForSelection(true);
+			}
 		}
+		else if (AxisDragger->IsGroupDragger())
+		{
+			for (int k = 0; k < AxisDragger->GetGroupMeshInfo().GroupMeshArray.Num(); k ++)
+			{
+				TWeakObjectPtr<AStaticMeshActor> MeshPtr = AxisDragger->GetGroupMeshInfo().GroupMeshArray[k];
+				if (MeshPtr.Get())
+				{
+					FVector OldScale3D = MeshPtr->GetActorRelativeScale3D();
+					MeshPtr->SetActorRelativeScale3D(ScaleFactor * OldScale3D);
+
+					FVector ActorLocationToBaseVec = MeshPtr->GetActorLocation() - DraggerBaseVertex;
+					FVector ActorLocationToBaseVecInLocal =
+						AxisDragger->GetTransform().InverseTransformVector(ActorLocationToBaseVec);
+					ActorLocationToBaseVecInLocal *= ScaleFactor;
+
+					FVector FinalOffset = AxisDragger->GetTransform().TransformVector(ActorLocationToBaseVecInLocal);
+					MeshPtr->SetActorLocation(DraggerBaseVertex + FinalOffset);
+					MeshPtr->SetPivotOffset(FVector::ZeroVector);
+					CurrentMeshData->SelectedLocation = MeshPtr->GetActorLocation();
+					GUnrealEd->UpdatePivotLocationForSelection(true);
+				}
+			}
+		}
+		else
+		{
+			UE_LOG(LogTemp, Display, TEXT("FMeshEditorEditorMode::HandleAxisWidgetDelta() failed. "));
+		}
+		// TArray<TWeakObjectPtr<AStaticMeshActor>>& SelectedMeshActorArray = AxisDragger->CurrentSelectedMeshActorArray;
+		// for (int k = 0; k < SelectedMeshActorArray.Num() - 1; k ++)
+		// {
+		// 	TWeakObjectPtr<AStaticMeshActor> SelectedMeshPtr = SelectedMeshActorArray[k];
+		// 	if (SelectedMeshPtr.Get())
+		// 	{
+		// 		FVector OldScale3D = MeshActorPtr->GetActorRelativeScale3D();
+		// 		SelectedMeshPtr->SetActorRelativeScale3D(ScaleFactor * OldScale3D);
+		// 	}
+		// }
 	}
 	return true;
 }
@@ -470,11 +576,20 @@ bool FMeshEditorEditorMode::InputKey(FEditorViewportClient* ViewportClient, FVie
 bool FMeshEditorEditorMode::InputDelta(FEditorViewportClient* InViewportClient, FViewport* InViewport, FVector& InDrag,
                                        FRotator& InRot, FVector& InScale)
 {
-	if (HandleAxisWidgetDelta(InViewportClient, InDrag, InRot, InScale))
+	// FVector2D MousePosition(InViewportClient->Viewport->GetMouseX(), InViewportClient->Viewport->GetMouseY());
+	// FIntPoint ViewportSize = InViewportClient->Viewport->GetSizeXY();
+	// UE_LOG(LogTemp, Display, TEXT("MousePosition, X: %f, Y: %f, WindowSize, SizeX: %f, SizeY: %f"),
+	// MousePosition[0], MousePosition[1], ViewportSize[0], ViewportSize[1]);
+
+	bool bHandleAxisDragger = false;
+	bool bHandleAttachMovement = false;
+
+	bHandleAxisDragger = HandleAxisWidgetDelta(InViewportClient, InDrag, InRot, InScale);
+	if (!bHandleAxisDragger)
 	{
-		return true;
+		bHandleAttachMovement = HandleAttachMovement(InViewportClient, InDrag, InRot, InScale);
 	}
-	return false;
+	return bHandleAttachMovement || bHandleAxisDragger;
 }
 
 void FMeshEditorEditorMode::EraseDroppingPreview()
@@ -541,6 +656,7 @@ void FMeshEditorEditorMode::CollectPressedKeysData(const FViewport* InViewport)
 {
 	// TODO remove
 	bIsCtrlKeyDown = InViewport->KeyState(EKeys::LeftControl) || InViewport->KeyState(EKeys::RightControl);
+	bIsBKeyDown = InViewport->KeyState(EKeys::B);
 	// bIsShiftKeyDown = InViewport->KeyState(EKeys::LeftShift) || InViewport->KeyState(EKeys::RightShift);
 	// bIsAltKeyDown = InViewport->KeyState(EKeys::LeftAlt) || InViewport->KeyState(EKeys::RightAlt);
 	bIsLeftMouseButtonDown = InViewport->KeyState(EKeys::LeftMouseButton);
@@ -585,6 +701,7 @@ void FMeshEditorEditorMode::Render(const FSceneView* View, FViewport* Viewport, 
 		const bool bIsPerspectiveView{EditorViewportClient->IsPerspective()};
 		const FVector EditorCameraLocation = EditorViewportClient->GetViewLocation();
 
+#ifdef HANDLE_DRAW_EDGE
 		// Draw edges
 		for (int i = 0; i < LastCapturedEdgeData.Num(); i ++)
 		{
@@ -612,9 +729,11 @@ void FMeshEditorEditorMode::Render(const FSceneView* View, FViewport* Viewport, 
 				              SDPG_World, Settings->MeshEdgeThickness);
 			}
 		}
+#endif
 
 		// Draw bracket box for selected actors
-		for (int k = CurrentMeshData->SelectedActors.Num() - 1; k >= 0; k --)
+		TArray<TWeakObjectPtr<AStaticMeshActor>> ActorsToBeDraw;
+		for (int k = 0; k < CurrentMeshData->SelectedActors.Num(); k ++)
 		{
 			AActor* SelectedActor = CurrentMeshData->SelectedActors[k];
 			TWeakObjectPtr<AActor> TmpActor = SelectedActor;
@@ -623,11 +742,11 @@ void FMeshEditorEditorMode::Render(const FSceneView* View, FViewport* Viewport, 
 				if (TmpActor->IsA(AStaticMeshActor::StaticClass()))
 				{
 					TWeakObjectPtr<AStaticMeshActor> MeshActorPtr = Cast<AStaticMeshActor>(SelectedActor);
-					DrawBoxDraggerForStaticMeshActor(PDI, View, Viewport, MeshActorPtr);
-					break;
+					ActorsToBeDraw.Add(MeshActorPtr);
 				}
 			}
 		}
+		DrawBoxDraggerForStaticMeshActors(PDI, View, Viewport, ActorsToBeDraw);
 	}
 	GEngine->AddOnScreenDebugMessage(-1, 0.f, FColor::Red, "This message must be of a certain length", true,
 	                                 FVector2D::ZeroVector);
@@ -646,67 +765,15 @@ void FMeshEditorEditorMode::DrawHUD(FEditorViewportClient* ViewportClient, FView
 	DPIScale = Canvas->GetDPIScale();
 }
 
-void FMeshEditorEditorMode::DrawBoxDraggerForStaticMeshActor(FPrimitiveDrawInterface* PDI, const FSceneView* View,
-                                                             FViewport* Viewport,
-                                                             TWeakObjectPtr<AStaticMeshActor> MeshActorPtr)
+void ComputeBracketCornerAndAxisForComp(const UStaticMeshComponent* InComp, TArray<FVector>& OutCorners,
+                                        TArray<FVector>& OutAxis)
 {
-	if (!MeshActorPtr.Get())
-	{
-		return;
-	}
-
-	if (MeshActorPtr->GetWorld() != PDI->View->Family->Scene->GetWorld())
-	{
-		return;
-	}
-
-	uint64 HiddenClients = MeshActorPtr->HiddenEditorViews;
-	bool bActorHiddenForViewport = false;
-
-	if (!MeshActorPtr->IsHiddenEd())
-	{
-		if (Viewport)
-		{
-			for (int32 ViewIndex = 0; ViewIndex < GEditor->GetLevelViewportClients().Num(); ++ViewIndex)
-			{
-				// If the current viewport is hiding this actor, don't draw brackets around it
-				if (Viewport->GetClient() == GEditor->GetLevelViewportClients()[ViewIndex] && HiddenClients & ((uint64)1
-					<< ViewIndex))
-				{
-					bActorHiddenForViewport = true;
-					break;
-				}
-			}
-		}
-
-		if (!bActorHiddenForViewport)
-		{
-			AxisDragger->SetMeshActor(MeshActorPtr);
-			MeshActorPtr->ForEachComponent<UStaticMeshComponent>(false, [&](const UStaticMeshComponent* InPrimComp)
-			{
-				TArray<FVector> MeshCorners;
-				DrawBracketForMeshComp(PDI, InPrimComp, MeshCorners);
-				DrawDraggerForMeshComp(PDI, View, Viewport, InPrimComp, MeshCorners);
-			});
-		}
-	}
-}
-
-void FMeshEditorEditorMode::DrawBracketForMeshComp(FPrimitiveDrawInterface* PDI, const UStaticMeshComponent* InMeshComp,
-                                                   TArray<FVector>& OutVerts)
-{
-	if (InMeshComp == nullptr)
-	{
-		return;
-	}
-
-	const FLinearColor GROUP_COLOR = {0.0f, 1.0f, 0.0f};
 	FBox LocalBox(ForceInit);
 
 	// Only use collidable components to find collision bounding box.
-	if (InMeshComp->IsRegistered() && (true || InMeshComp->IsCollisionEnabled()))
+	if (InComp->IsRegistered() && (true || InComp->IsCollisionEnabled()))
 	{
-		LocalBox = InMeshComp->CalcBounds(FTransform::Identity).GetBox();
+		LocalBox = InComp->CalcBounds(FTransform::Identity).GetBox();
 	}
 
 	FVector MinVector, MaxVector;
@@ -724,7 +791,7 @@ void FMeshEditorEditorMode::DrawBracketForMeshComp(FPrimitiveDrawInterface* PDI,
 
 	// Calculate bracket corners based on min/max vectors
 	TArray<FVector> BracketCorners;
-	const FTransform& CompTransform = InMeshComp->GetComponentTransform();
+	const FTransform& CompTransform = InComp->GetComponentTransform();
 
 	// Bottom Corners
 	BracketCorners.Add(CompTransform.TransformPosition(FVector(MinVector.X, MinVector.Y, MinVector.Z)));
@@ -742,6 +809,80 @@ void FMeshEditorEditorMode::DrawBracketForMeshComp(FPrimitiveDrawInterface* PDI,
 	FVector GlobalAxisY = CompTransform.TransformVectorNoScale(FVector{0.0f, 1.0f, 0.0f});
 	FVector GlobalAxisZ = CompTransform.TransformVectorNoScale(FVector{0.0f, 0.0f, 1.0f});
 
+	{
+		// Reverse axis direction
+		FVector3d ScaleVec = CompTransform.GetScale3D();
+		GlobalAxisX *= (ScaleVec[0] < 0.f ? -1.f : 1.f);
+		GlobalAxisY *= (ScaleVec[1] < 0.f ? -1.f : 1.f);
+		GlobalAxisZ *= (ScaleVec[2] < 0.f ? -1.f : 1.f);
+	}
+
+	// Store corners and axis
+	OutCorners.Empty();
+	for (FVector Corner : BracketCorners)
+	{
+		OutCorners.Add(Corner);
+	}
+
+	OutAxis.Empty();
+	OutAxis.Add(GlobalAxisX);
+	OutAxis.Add(GlobalAxisY);
+	OutAxis.Add(GlobalAxisZ);
+}
+
+void ComputeBracketCornerAndAxisForMeshGroup(TArray<TWeakObjectPtr<AStaticMeshActor>>& MeshActorArray,
+                                             TArray<FVector>& OutCorners, TArray<FVector>& OutAxis)
+{
+	FBox ActorBounds(EForceInit::ForceInit);
+	for (TWeakObjectPtr<AStaticMeshActor> MeshActor : MeshActorArray)
+	{
+		if (MeshActor.Get())
+		{
+			for (const UActorComponent* ActorComp : MeshActor->GetComponents())
+			{
+				const UStaticMeshComponent* MeshComp = Cast<UStaticMeshComponent>(ActorComp);
+				if (MeshComp != nullptr)
+				{
+					ActorBounds += MeshComp->Bounds.GetBox();
+				}
+			}
+		}
+	}
+
+	FVector Min = ActorBounds.Min;
+	FVector Max = ActorBounds.Max;
+
+	OutCorners.Empty();
+	OutCorners.Add(FVector(Min.X, Min.Y, Min.Z));
+	OutCorners.Add(FVector(Min.X, Max.Y, Min.Z));
+	OutCorners.Add(FVector(Max.X, Max.Y, Min.Z));
+	OutCorners.Add(FVector(Max.X, Min.Y, Min.Z));
+
+	OutCorners.Add(FVector(Min.X, Min.Y, Max.Z));
+	OutCorners.Add(FVector(Min.X, Max.Y, Max.Z));
+	OutCorners.Add(FVector(Max.X, Max.Y, Max.Z));
+	OutCorners.Add(FVector(Max.X, Min.Y, Max.Z));
+
+	OutAxis.Empty();
+	OutAxis.Add(FVector(1.0f, 0.0f, 0.0f));
+	OutAxis.Add(FVector(0.0f, 1.0f, 0.0f));
+	OutAxis.Add(FVector(0.0f, 0.0f, 1.0f));
+}
+
+void FMeshEditorEditorMode::DrawBoxDraggerForStaticMeshActors(
+	FPrimitiveDrawInterface* PDI, const FSceneView* View, FViewport* Viewport,
+	TArray<TWeakObjectPtr<AStaticMeshActor>>& MeshActorArray)
+{
+	AxisDragger->UpdateControlledMeshGroup(MeshActorArray);
+
+	TArray<FVector> DraggerBracketCorners;
+	DrawBracket(PDI, Viewport, DraggerBracketCorners);
+	DrawDragger(PDI, View, Viewport, DraggerBracketCorners);
+}
+
+void DrawBrackets(FPrimitiveDrawInterface* PDI, const FLinearColor DrawColor, const float LineThickness,
+                  TArray<FVector>& BracketCorners, TArray<FVector>& GlobalAxis)
+{
 	const float BracketOffsetFactor = 0.2;
 	float BracketOffset;
 	float BracketPadding;
@@ -761,43 +902,132 @@ void FMeshEditorEditorMode::DrawBracketForMeshComp(FPrimitiveDrawInterface* PDI,
 	{
 		// Direction corner axis should be pointing based on min/max
 		const FVector CORNER = BracketCorners[BracketCornerIndex]
-			- (BracketPadding * DIR_X[BracketCornerIndex] * GlobalAxisX)
-			- (BracketPadding * DIR_Y[BracketCornerIndex] * GlobalAxisY)
-			- (BracketPadding * DIR_Z[BracketCornerIndex] * GlobalAxisZ);
+			- (BracketPadding * DIR_X[BracketCornerIndex] * GlobalAxis[0])
+			- (BracketPadding * DIR_Y[BracketCornerIndex] * GlobalAxis[1])
+			- (BracketPadding * DIR_Z[BracketCornerIndex] * GlobalAxis[2]);
 
-		PDI->DrawLine(CORNER, CORNER + (BracketOffset * DIR_X[BracketCornerIndex] * GlobalAxisX), GROUP_COLOR,
-		              SDPG_Foreground);
-		PDI->DrawLine(CORNER, CORNER + (BracketOffset * DIR_Y[BracketCornerIndex] * GlobalAxisY), GROUP_COLOR,
-		              SDPG_Foreground);
-		PDI->DrawLine(CORNER, CORNER + (BracketOffset * DIR_Z[BracketCornerIndex] * GlobalAxisZ), GROUP_COLOR,
-		              SDPG_Foreground);
-	}
-
-	for (int32 BracketCornerIndex = 0; BracketCornerIndex < BracketCorners.Num(); ++BracketCornerIndex)
-	{
-		OutVerts.Add(BracketCorners[BracketCornerIndex]);
+		PDI->DrawLine(CORNER, CORNER + (BracketOffset * DIR_X[BracketCornerIndex] * GlobalAxis[0]),
+		              DrawColor, SDPG_Foreground, LineThickness);
+		PDI->DrawLine(CORNER, CORNER + (BracketOffset * DIR_Y[BracketCornerIndex] * GlobalAxis[1]),
+		              DrawColor, SDPG_Foreground, LineThickness);
+		PDI->DrawLine(CORNER, CORNER + (BracketOffset * DIR_Z[BracketCornerIndex] * GlobalAxis[2]),
+		              DrawColor, SDPG_Foreground, LineThickness);
 	}
 }
 
-void FMeshEditorEditorMode::DrawDraggerForMeshComp(FPrimitiveDrawInterface* PDI, const FSceneView* View,
-                                                   FViewport* Viewport, const UStaticMeshComponent* InMeshComp,
-                                                   const TArray<FVector>& InCorners)
+void FMeshEditorEditorMode::DrawBracket(FPrimitiveDrawInterface* PDI, FViewport* Viewport,
+                                        TArray<FVector>& OutVerts)
 {
+	if (AxisDragger->IsMeshDragger())
+	{
+		TWeakObjectPtr<AStaticMeshActor> MeshActorPtr = AxisDragger->GetMeshActor();
+
+		if (!MeshActorPtr.Get())
+		{
+			return;
+		}
+
+		if (MeshActorPtr->GetWorld() != PDI->View->Family->Scene->GetWorld())
+		{
+			return;
+		}
+
+		uint64 HiddenClients = MeshActorPtr->HiddenEditorViews;
+		if (!MeshActorPtr->IsHiddenEd())
+		{
+			bool bActorHiddenForViewport = false;
+			if (Viewport)
+			{
+				for (int32 ViewIndex = 0; ViewIndex < GEditor->GetLevelViewportClients().Num(); ++ViewIndex)
+				{
+					// If the current viewport is hiding this actor, don't draw brackets around it
+					if (Viewport->GetClient() == GEditor->GetLevelViewportClients()[ViewIndex] && HiddenClients & (
+						static_cast<uint64>(1)
+						<< ViewIndex))
+					{
+						bActorHiddenForViewport = true;
+						break;
+					}
+				}
+			}
+
+			if (!bActorHiddenForViewport)
+			{
+				// TODO 默认一个 MeshActor 只有一个 AStaticMeshComp，之后在做修改
+				MeshActorPtr->ForEachComponent<UStaticMeshComponent>(false, [&](const UStaticMeshComponent* InPrimComp)
+				{
+					// Draw bracket for each component
+					if (InPrimComp == nullptr)
+					{
+						return;
+					}
+
+					const FLinearColor MESH_BRACKET_COLOR = {0.0f, 1.0f, 0.0f};
+					TArray<FVector> BracketCorners;
+					TArray<FVector> GlobalAxis;
+
+					ComputeBracketCornerAndAxisForComp(InPrimComp, BracketCorners, GlobalAxis);
+					DrawBrackets(PDI, MESH_BRACKET_COLOR, 0.0f, BracketCorners, GlobalAxis);
+
+					for (int32 BracketCornerIndex = 0; BracketCornerIndex < BracketCorners.Num(); ++BracketCornerIndex)
+					{
+						OutVerts.Add(BracketCorners[BracketCornerIndex]);
+					}
+				});
+			}
+		}
+	}
+	else if (AxisDragger->IsGroupDragger())
+	{
+		// Draw bracket for group
+		const FLinearColor GROUP_MESH_BRACKET_COLOR = {0.0f, 0.5f, 0.0f};
+		const float GROUP_BRACKET_THICKNESS = 3.0f;
+		TArray<FVector> BracketCorners;
+		TArray<FVector> GlobalAxis;
+
+		ComputeBracketCornerAndAxisForMeshGroup(AxisDragger->GetGroupMeshInfo().GroupMeshArray, BracketCorners,
+		                                        GlobalAxis);
+		DrawBrackets(PDI, GROUP_MESH_BRACKET_COLOR, GROUP_BRACKET_THICKNESS, BracketCorners, GlobalAxis);
+
+		for (int32 BracketCornerIndex = 0; BracketCornerIndex < BracketCorners.Num(); ++BracketCornerIndex)
+		{
+			OutVerts.Add(BracketCorners[BracketCornerIndex]);
+		}
+	}
+	else
+	{
+		UE_LOG(LogTemp, Display, TEXT("FMeshEditorEditorMode::DrawBracket() failed. "));
+	}
+}
+
+void ComputeAxisBases(const TArray<FVector>& InCorners, TArray<FVector>& OutAxisBases)
+{
+	// Bottom
+	OutAxisBases.Add((InCorners[0] + InCorners[1] + InCorners[2] + InCorners[3]) / 4.0f);
+	// Top
+	OutAxisBases.Add((InCorners[4] + InCorners[5] + InCorners[6] + InCorners[7]) / 4.0f);
+	// Left
+	OutAxisBases.Add((InCorners[0] + InCorners[1] + InCorners[5] + InCorners[4]) / 4.0f);
+	// Right
+	OutAxisBases.Add((InCorners[3] + InCorners[2] + InCorners[6] + InCorners[7]) / 4.0f);
+	// Back
+	OutAxisBases.Add((InCorners[0] + InCorners[3] + InCorners[4] + InCorners[7]) / 4.0f);
+	// Front
+	OutAxisBases.Add((InCorners[1] + InCorners[2] + InCorners[5] + InCorners[6]) / 4.0f);
+}
+
+void FMeshEditorEditorMode::DrawDragger(FPrimitiveDrawInterface* PDI, const FSceneView* View,
+                                        FViewport* Viewport, const TArray<FVector>& InCorners)
+{
+	if (InCorners.Num() == 0)
+	{
+		return;
+	}
+
 	check(InCorners.Num() == 8);
 
 	TArray<FVector> AxisBases;
-	// Bottom
-	AxisBases.Add((InCorners[0] + InCorners[1] + InCorners[2] + InCorners[3]) / 4.0f);
-	// Top
-	AxisBases.Add((InCorners[4] + InCorners[5] + InCorners[6] + InCorners[7]) / 4.0f);
-	// Left
-	AxisBases.Add((InCorners[0] + InCorners[1] + InCorners[5] + InCorners[4]) / 4.0f);
-	// Right
-	AxisBases.Add((InCorners[3] + InCorners[2] + InCorners[6] + InCorners[7]) / 4.0f);
-	// Back
-	AxisBases.Add((InCorners[0] + InCorners[3] + InCorners[4] + InCorners[7]) / 4.0f);
-	// Front
-	AxisBases.Add((InCorners[1] + InCorners[2] + InCorners[5] + InCorners[6]) / 4.0f);
+	ComputeAxisBases(InCorners, AxisBases);
 
 	TArray<EAxisList::Type> AxisDir = {
 		EAxisList::Type::Z, EAxisList::Type::Z,
@@ -818,13 +1048,11 @@ void FMeshEditorEditorMode::DrawDraggerForMeshComp(FPrimitiveDrawInterface* PDI,
 	else
 	{
 		AxisDragger->SetAxisBaseVerts(AxisBases);
-		AxisDragger->SetTransform(InMeshComp->GetComponentTransform());
 	}
 
-	FTransform CompTransform = InMeshComp->GetComponentTransform();
 	for (int32 BaseIndex = 0; BaseIndex < AxisBases.Num(); BaseIndex ++)
 	{
-		AxisDragger->RenderAxis(PDI, View, CompTransform, AxisBases[BaseIndex], AxisDir[BaseIndex], AxisFlip[BaseIndex],
+		AxisDragger->RenderAxis(PDI, View, AxisBases[BaseIndex], AxisDir[BaseIndex], AxisFlip[BaseIndex],
 		                        true);
 	}
 }
@@ -1007,5 +1235,11 @@ void FMeshEditorEditorMode::InvalidateHitProxies()
 		GEditor->GetActiveViewport()->InvalidateHitProxy();
 	}
 }
+
+bool FMeshEditorEditorMode::IsInAttachMovementMode()
+{
+	return bIsBKeyDown;
+}
+
 
 #undef LOCTEXT_NAMESPACE

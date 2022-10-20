@@ -18,7 +18,9 @@ void FMeshEditorModule::StartupModule()
 
 	BindCommands();
 
-	FEditorModeRegistry::Get().RegisterMode<FMeshEditorEditorMode>(FMeshEditorEditorMode::EM_MeshEditorEditorModeId, LOCTEXT("FMeshEditorEditorModeName", "MeshEditor"), FSlateIcon(), false);
+	FEditorModeRegistry::Get().RegisterMode<FMeshEditorEditorMode>(FMeshEditorEditorMode::EM_MeshEditorEditorModeId,
+	                                                               LOCTEXT("FMeshEditorEditorModeName", "MeshEditor"),
+	                                                               FSlateIcon(), false);
 
 	FLevelEditorModule& LevelEditorModule = FModuleManager::LoadModuleChecked<FLevelEditorModule>("LevelEditor");
 	LevelEditorModule.GetGlobalLevelEditorActions()->Append(MeshEditorActions.ToSharedRef());
@@ -53,7 +55,7 @@ void FMeshEditorModule::OnMeshEditorModeStateChanged(ECheckBoxState InState)
 	else
 	{
 		DeactivateEdMode();
-	}	
+	}
 }
 
 
@@ -65,9 +67,9 @@ void FMeshEditorModule::CreateToolbarExtension(FToolBarBuilder& InToolbarBuilder
 		.Cursor(EMouseCursor::Default)
 		.IsMeshEditorChecked_Raw(this, &FMeshEditorModule::IsMeshEditorModeChecked)
 		.OnMeshEditorCheckStateChanged_Raw(this, &FMeshEditorModule::OnMeshEditorModeStateChanged)
-		);
-	
-	InToolbarBuilder.EndSection();	
+	);
+
+	InToolbarBuilder.EndSection();
 }
 
 
@@ -109,10 +111,10 @@ ECheckBoxState FMeshEditorModule::IsMeshEditorModeChecked() const
 void FMeshEditorModule::ActivateEdMode()
 {
 	GLevelEditorModeTools().ActivateMode(FMeshEditorEditorMode::EM_MeshEditorEditorModeId);
-	if (FMeshEditorEditorMode* EdMode {GetMeshEditorEditorMode()})
+	if (FMeshEditorEditorMode* EdMode{GetMeshEditorEditorMode()})
 	{
 		EdMode->bIsModeOn = true;
-	}	
+	}
 }
 
 void FMeshEditorModule::DeactivateEdMode()
@@ -122,7 +124,8 @@ void FMeshEditorModule::DeactivateEdMode()
 
 FMeshEditorEditorMode* FMeshEditorModule::GetMeshEditorEditorMode() const
 {
-	return static_cast<FMeshEditorEditorMode*>(GLevelEditorModeTools().GetActiveMode(FMeshEditorEditorMode::EM_MeshEditorEditorModeId));
+	return static_cast<FMeshEditorEditorMode*>(GLevelEditorModeTools().GetActiveMode(
+		FMeshEditorEditorMode::EM_MeshEditorEditorModeId));
 }
 
 void FMeshEditorModule::BindCommands()

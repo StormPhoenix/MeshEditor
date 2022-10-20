@@ -6,11 +6,11 @@
 namespace FMeshDataIterators
 {
 	FStaticMeshVertexIterator::FStaticMeshVertexIterator(UStaticMeshComponent* SMC)
-	: ComponentToWorldIT(SMC->GetComponentTransform().ToInverseMatrixWithScale().GetTransposed())
-	  , StaticMeshComponent(SMC)
-	, PositionBuffer(SMC->GetStaticMesh()->GetRenderData()->LODResources[0].VertexBuffers.PositionVertexBuffer)
-	, VertexBuffer(SMC->GetStaticMesh()->GetRenderData()->LODResources[0].VertexBuffers.StaticMeshVertexBuffer),
-	  CurrentVertexIndex(0)
+		: ComponentToWorldIT(SMC->GetComponentTransform().ToInverseMatrixWithScale().GetTransposed())
+		  , StaticMeshComponent(SMC)
+		  , PositionBuffer(SMC->GetStaticMesh()->GetRenderData()->LODResources[0].VertexBuffers.PositionVertexBuffer)
+		  , VertexBuffer(SMC->GetStaticMesh()->GetRenderData()->LODResources[0].VertexBuffers.StaticMeshVertexBuffer),
+		  CurrentVertexIndex(0)
 	{
 	}
 
@@ -22,7 +22,8 @@ namespace FMeshDataIterators
 
 	FVector FStaticMeshVertexIterator::Normal() const
 	{
-		return ComponentToWorldIT.TransformVector(static_cast<FVector4>(VertexBuffer.VertexTangentZ(CurrentVertexIndex)));
+		return ComponentToWorldIT.TransformVector(
+			static_cast<FVector4>(VertexBuffer.VertexTangentZ(CurrentVertexIndex)));
 	}
 
 	void FStaticMeshVertexIterator::Advance()
@@ -34,14 +35,14 @@ namespace FMeshDataIterators
 	{
 		return CurrentVertexIndex < PositionBuffer.GetNumVertices();
 	}
-	
+
 	FStaticMeshEdgeIterator::FStaticMeshEdgeIterator(UStaticMeshComponent* SMC)
 		: ComponentToWorldIT(SMC->GetComponentTransform().ToInverseMatrixWithScale().GetTransposed())
 		  , StaticMeshComponent(SMC)
 		  , PositionBuffer(SMC->GetStaticMesh()->GetRenderData()->LODResources[0].VertexBuffers.PositionVertexBuffer)
-		  , IndexBuffer(SMC->GetStaticMesh()->GetRenderData()->LODResources[0].IndexBuffer)
 		  , CurrentEdgeIndex(0)
-		  , CurrentTriangeVertexIndex(0), MaxEdgeIndex(0)
+		  , CurrentTriangeVertexIndex(0)
+		  , MaxEdgeIndex(0), IndexBuffer(SMC->GetStaticMesh()->GetRenderData()->LODResources[0].IndexBuffer)
 	{
 	}
 
@@ -92,7 +93,7 @@ namespace FMeshDataIterators
 		}
 		return nullptr;
 	}
-	
+
 	TSharedPtr<FEdgeIterator> MakeEdgeIterator(UPrimitiveComponent* Component)
 	{
 		UStaticMeshComponent* SMC = Cast<UStaticMeshComponent>(Component);

@@ -22,7 +22,6 @@ public:
 };
 
 
-
 /**
  * Settings UObject for UMeshEditorSimpleTool. This UClass inherits from UInteractiveToolPropertySet,
  * which provides an OnModified delegate that the Tool will listen to for changes in property values.
@@ -38,8 +37,6 @@ public:
 	UPROPERTY(EditAnywhere, Category = Options, meta = (DisplayName = "Show Extended Info"))
 	bool ShowExtendedInfo;
 };
-
-
 
 
 /**
@@ -58,7 +55,7 @@ public:
 
 	virtual void Setup() override;
 
-	virtual void OnClicked(const FInputDeviceRay& ClickPos);
+	virtual void OnClicked(const FInputDeviceRay& ClickPos) override;
 
 
 protected:

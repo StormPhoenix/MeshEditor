@@ -12,7 +12,11 @@ class FMeshEditorEditorModeCommands : public TCommands<FMeshEditorEditorModeComm
 {
 public:
 	FMeshEditorEditorModeCommands()
-	: TCommands<FMeshEditorEditorModeCommands>(TEXT("MeshEditor"), NSLOCTEXT("Contexts", "MeshEditor", "MeshEditor Plugin"), NAME_None, FMeshEditorStyle::GetStyleSetName()){}
+		: TCommands<FMeshEditorEditorModeCommands>(
+			TEXT("MeshEditor"), NSLOCTEXT("Contexts", "MeshEditor", "MeshEditor Plugin"), NAME_None,
+			FMeshEditorStyle::GetStyleSetName())
+	{
+	}
 
 	virtual void RegisterCommands() override;
 

@@ -21,7 +21,6 @@ UInteractiveTool* UMeshEditorSimpleToolBuilder::BuildTool(const FToolBuilderStat
 }
 
 
-
 /*
  * ToolProperties implementation
  */
@@ -74,14 +73,15 @@ void UMeshEditorSimpleTool::OnClicked(const FInputDeviceRay& ClickPos)
 
 			if (Properties->ShowExtendedInfo)
 			{
-				ActorInfoMsg = FText::Format(LOCTEXT("ExtendedActorInfo", "Name: {0}\nClass: {1}"), 
-					FText::FromString(ClickedActor->GetName()), 
-					FText::FromString(ClickedActor->GetClass()->GetName())
+				ActorInfoMsg = FText::Format(LOCTEXT("ExtendedActorInfo", "Name: {0}\nClass: {1}"),
+				                             FText::FromString(ClickedActor->GetName()),
+				                             FText::FromString(ClickedActor->GetClass()->GetName())
 				);
 			}
 			else
 			{
-				ActorInfoMsg = FText::Format(LOCTEXT("BasicActorInfo", "Name: {0}"), FText::FromString(Result.GetActor()->GetName()));
+				ActorInfoMsg = FText::Format(
+					LOCTEXT("BasicActorInfo", "Name: {0}"), FText::FromString(Result.GetActor()->GetName()));
 			}
 
 			FText Title = LOCTEXT("ActorInfoDialogTitle", "Actor Info");

@@ -48,7 +48,7 @@ namespace FMeshDataIterators
 		*/
 		virtual void Advance() = 0;
 	};
-	
+
 	class FEdgeIterator
 	{
 	public:
@@ -86,7 +86,7 @@ namespace FMeshDataIterators
 		*/
 		// virtual FVector Normal() const = 0;
 
-		protected:
+	protected:
 		/**
 		* @return True if there are more vertices on the component
 		*/
@@ -162,7 +162,7 @@ namespace FMeshDataIterators
 	* Makes a vertex iterator from the specified component
 	*/
 	static TSharedPtr<FVertexIterator> MakeVertexIterator(UPrimitiveComponent* Component);
-	
+
 	/**
 	* Makes a edge iterator from the specified component
 	*/

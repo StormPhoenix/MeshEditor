@@ -18,7 +18,7 @@
  * ToolBuilder
  */
 
-UInteractiveTool* UMeshEditorInteractiveToolBuilder::BuildTool(const FToolBuilderState & SceneState) const
+UInteractiveTool* UMeshEditorInteractiveToolBuilder::BuildTool(const FToolBuilderState& SceneState) const
 {
 	UMeshEditorInteractiveTool* NewTool = NewObject<UMeshEditorInteractiveTool>(SceneState.ToolManager);
 	NewTool->SetWorld(SceneState.World);
@@ -34,8 +34,8 @@ UInteractiveTool* UMeshEditorInteractiveToolBuilder::BuildTool(const FToolBuilde
 UMeshEditorInteractiveToolProperties::UMeshEditorInteractiveToolProperties()
 {
 	// initialize the points and distance to reasonable values
-	StartPoint = FVector(0,0,0);
-	EndPoint = FVector(0,0,100);
+	StartPoint = FVector(0, 0, 0);
+	EndPoint = FVector(0, 0, 100);
 	Distance = 100;
 }
 
@@ -62,7 +62,7 @@ void UMeshEditorInteractiveTool::Setup()
 	// Create the property set and register it with the Tool
 	Properties = NewObject<UMeshEditorInteractiveToolProperties>(this, "Measurement");
 	AddToolPropertySource(Properties);
-	
+
 	bSecondPointModifierDown = false;
 	bMoveSecondPoint = false;
 }
@@ -106,7 +106,8 @@ FInputRayHit UMeshEditorInteractiveTool::FindRayHit(const FRay& WorldRay, FVecto
 	// trace a ray into the World
 	FCollisionObjectQueryParams QueryParams(FCollisionObjectQueryParams::AllObjects);
 	FHitResult Result;
-	bool bHitWorld = TargetWorld->LineTraceSingleByObjectType(Result, WorldRay.Origin, WorldRay.PointAt(999999), QueryParams);
+	bool bHitWorld = TargetWorld->LineTraceSingleByObjectType(Result, WorldRay.Origin, WorldRay.PointAt(999999),
+	                                                          QueryParams);
 	if (bHitWorld)
 	{
 		HitPos = Result.ImpactPoint;
@@ -144,10 +145,10 @@ void UMeshEditorInteractiveTool::Render(IToolsContextRenderAPI* RenderAPI)
 	FPrimitiveDrawInterface* PDI = RenderAPI->GetPrimitiveDrawInterface();
 	// draw a thin line that shows through objects
 	PDI->DrawLine(Properties->StartPoint, Properties->EndPoint,
-		FColor(240, 16, 16), SDPG_Foreground, 2.0f, 0.0f, true);
+	              FColor(240, 16, 16), SDPG_Foreground, 2.0f, 0.0f, true);
 	// draw a thicker line that is depth-tested
 	PDI->DrawLine(Properties->StartPoint, Properties->EndPoint,
-		FColor(240, 16, 16), SDPG_World, 4.0f, 0.0f, true);
+	              FColor(240, 16, 16), SDPG_World, 4.0f, 0.0f, true);
 }
 
 

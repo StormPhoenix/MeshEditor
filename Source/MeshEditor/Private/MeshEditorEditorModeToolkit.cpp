@@ -15,7 +15,8 @@ FMeshEditorEditorModeToolkit::FMeshEditorEditorModeToolkit()
 {
 }
 
-void FMeshEditorEditorModeToolkit::Init(const TSharedPtr<IToolkitHost>& InitToolkitHost, TWeakObjectPtr<UEdMode> InOwningMode)
+void FMeshEditorEditorModeToolkit::Init(const TSharedPtr<IToolkitHost>& InitToolkitHost,
+                                        TWeakObjectPtr<UEdMode> InOwningMode)
 {
 	FModeToolkit::Init(InitToolkitHost, InOwningMode);
 }

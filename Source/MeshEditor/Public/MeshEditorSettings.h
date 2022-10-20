@@ -11,10 +11,10 @@ class MESHEDITOR_API UMeshEditorSettings : public UDeveloperSettings
 	GENERATED_BODY()
 public:
 	UPROPERTY(Config, EditAnywhere, Category = "ColorSettings|MeshEdgeSettings")
-	FColor MeshEdgeColor {FColor::Orange};
-	
+	FColor MeshEdgeColor{FColor::Orange};
+
 	UPROPERTY(Config, EditAnywhere, Category = "ColorSettings|LineSettings")
-	float MeshEdgeThickness {1.0f};
-	
+	float MeshEdgeThickness{1.0f};
+
 	static const UMeshEditorSettings* Get();
 };
