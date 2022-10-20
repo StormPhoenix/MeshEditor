@@ -106,6 +106,7 @@ public:
 		bAbsoluteTranslationInitialOffsetCached = false;
 	}
 
+	// 是否处理一组 Mesh
 	bool IsGroupDragger() const
 	{
 		if (!MeshActorPtr.Get() && GroupMeshInfo.GroupMeshArray.Num() > 1)
@@ -118,6 +119,7 @@ public:
 		}
 	}
 
+	// 是否处理单个 Mesh
 	bool IsMeshDragger() const
 	{
 		if (MeshActorPtr.Get() && GroupMeshInfo.GroupMeshArray.Num() <= 0)
@@ -133,6 +135,15 @@ public:
 	FGroupMeshInfo& GetGroupMeshInfo()
 	{
 		return GroupMeshInfo;
+	}
+
+	FVector GetControlledCenter()
+	{
+		if (BaseVerts.Num() != 6)
+		{
+			return  FVector::Zero();
+		}
+		return BaseVerts[0];
 	}
 
 private:

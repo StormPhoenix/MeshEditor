@@ -104,6 +104,8 @@ void FMeshEditorEditorMode::Enter()
 	                                       FTimerDelegate::CreateRaw(
 		                                       this, &FMeshEditorEditorMode::InvalidateHitProxies), 0.3f, true);
 	UpdateInitialSelection();
+
+	RefreshPrefabs();
 }
 
 
@@ -162,6 +164,57 @@ bool FMeshEditorEditorMode::HandleEdgeClickEvent(FEditorViewportClient* InViewpo
 	return false;
 }
 
+FBox GetPrefabBounds(APrefabActor* PrefabPtr)
+{
+	FBox RetBox(EForceInit::ForceInit);
+	if (PrefabPtr == nullptr)
+	{
+		return RetBox;
+	}
+
+	TArray<AActor*> AttachedActors;
+	PrefabPtr->GetAttachedActors(AttachedActors);
+	for (AActor* AttachedActor : AttachedActors)
+	{
+		if (AttachedActor->IsA(AStaticMeshActor::StaticClass()))
+		{
+			AttachedActor->ForEachComponent<UStaticMeshComponent>(false, [&](const UStaticMeshComponent* InComp)
+			{
+				if (InComp == nullptr)
+				{
+					return;
+				}
+
+				RetBox += InComp->Bounds.GetBox();
+			});
+		}
+		else if (AttachedActor->IsA(APrefabActor::StaticClass()))
+		{
+			RetBox += GetPrefabBounds(Cast<APrefabActor>(AttachedActor));
+		}
+	}
+	return RetBox;
+}
+
+bool IsBoxContainsPoint(const FBox& Box, const FVector& Point)
+{
+	FVector Min = Box.Min;
+	FVector Max = Box.Max;
+
+	if ((Point[0] > Min[0] &&
+			Point[1] > Min[1] &&
+			Point[2] > Min[2])
+		&& (Point[0] < Max[0] &&
+			Point[1] < Max[1] &&
+			Point[2] < Max[2]))
+	{
+		return true;
+	}
+	else
+	{
+		return false;
+	}
+}
 
 bool FMeshEditorEditorMode::HandlePrefabClickEvent(FEditorViewportClient* InViewportClient, HHitProxy* HitProxy,
                                                    const FViewportClick& Click)
@@ -221,19 +274,35 @@ bool FMeshEditorEditorMode::HandlePrefabClickEvent(FEditorViewportClient* InView
 					else
 					{
 						// 处理单击事件
-						FatherPrefabPtr->DeselectSelf();
 						if (bIsCtrlKeyDown)
 						{
+							FatherPrefabPtr->DeselectSelf();
 							bool bInSelected = !SonActorPtr->IsSelected();
 							GEditor->SelectActor(SonActorPtr, bInSelected, true, true, true);
-							// bPrefabHandle = true;
 							bPrefabHandle = true;
 						}
 						else
 						{
 							// Just single-one click
-							// GEditor->SelectActor(SonActorPtr, true, true, true, true);
-							bPrefabHandle = false;
+							TArray<APrefabActor*> SelectedPrefabs;
+							TArray<AStaticMeshActor*> SelectedMeshes;
+							USelection* CurrentEditorSelection = GEditor->GetSelectedActors();
+							CurrentEditorSelection->GetSelectedObjects<APrefabActor>(SelectedPrefabs);
+							CurrentEditorSelection->GetSelectedObjects<AStaticMeshActor>(SelectedMeshes);
+
+							// 选中所有子组件功能
+							if ((SelectedPrefabs.Num() == 1) && (SelectedMeshes.Num() == 0) &&
+								(SelectedPrefabs[0] == FatherPrefabPtr))
+							{
+								FatherPrefabPtr->SelectAllAttachedActors();
+								bPrefabHandle = true;
+							}
+							else
+							{
+								bPrefabHandle = false;
+							}
+							FatherPrefabPtr->DeselectSelf();
+							// GEditor->SelectActor(FatherPrefabPtr, false, true, false, true);
 						}
 					}
 				}
@@ -278,6 +347,51 @@ float ComputeScaleFactor(FVector& Base, FVector& DragDelta, int Axis)
 	return Result;
 }
 
+// TODO Move to helpers
+void ParentActors(AActor* ParentActor, AActor* ChildActor)
+{
+	if (!ChildActor || !ParentActor)
+	{
+		return;
+	}
+	USceneComponent* ChildRoot = ChildActor->GetRootComponent();
+	USceneComponent* ParentRoot = ParentActor->GetDefaultAttachComponent();
+
+	if (!ChildRoot)
+	{
+		return;
+	}
+
+	if (!ParentRoot)
+	{
+		return;
+	}
+
+	check(ChildRoot); // CanParentActors() call should ensure this
+	check(ParentRoot); // CanParentActors() call should ensure this
+
+	ChildActor->Modify();
+	ParentActor->Modify();
+
+	// If child is already attached to something, modify the old parent and detach
+	if (ChildRoot->GetAttachParent() != nullptr)
+	{
+		AActor* OldParentActor = ChildRoot->GetAttachParent()->GetOwner();
+		OldParentActor->Modify();
+		ChildRoot->DetachFromComponent(FDetachmentTransformRules::KeepWorldTransform);
+	}
+
+	// If the parent is already attached to this child, modify its parent and detach so we can allow the attachment
+	if (ParentRoot->IsAttachedTo(ChildRoot))
+	{
+		ParentRoot->GetAttachParent()->GetOwner()->Modify();
+		ParentRoot->DetachFromComponent(FDetachmentTransformRules::KeepWorldTransform);
+	}
+
+	// Snap to socket if a valid socket name was provided, otherwise attach without changing the relative transform
+	ChildRoot->AttachToComponent(ParentRoot, FAttachmentTransformRules::KeepWorldTransform, NAME_None);
+}
+
 bool FMeshEditorEditorMode::HandleAttachMovement(FEditorViewportClient* InViewportClient, const FVector& InDrag,
                                                  const FRotator& InRot, const FVector& InScale)
 {
@@ -294,50 +408,128 @@ bool FMeshEditorEditorMode::HandleAttachMovement(FEditorViewportClient* InViewpo
 
 	if (IsInAttachMovementMode())
 	{
-		FVector2D MousePosition(InViewportClient->Viewport->GetMouseX(), InViewportClient->Viewport->GetMouseY());
+		TArray<AStaticMeshActor*> SelectedMesh{};
+		USelection* CurrentEditorSelection = GEditor->GetSelectedActors();
+		CurrentEditorSelection->GetSelectedObjects<AStaticMeshActor>(SelectedMesh);
 
-		FViewportCursorLocation MouseViewportRay(EdModeView, InViewportClient, MousePosition.X, MousePosition.Y);
-		FVector StartPos = MouseViewportRay.GetOrigin();
-		FVector RayDirection = MouseViewportRay.GetDirection();
-		FVector EndPos = (RayDirection * WORLD_MAX) + StartPos;
-		if (InViewportClient->IsOrtho())
+		if (SelectedMesh.Num() > 0)
 		{
-			StartPos -= WORLD_MAX * RayDirection;
-		}
-
-		FHitResult HitResult;
-		DrawDebugLine(GetWorld(), StartPos, EndPos, FColor::Red, false, 1, 0, 0.1);
-
-		// TODO 拖拽之前，要求三方向轴都要选中
-
-		FCollisionQueryParams CollisionQueryParams;
-		{
-			// 忽略选中 Actor
-			TArray<AStaticMeshActor*> SelectedActors{};
-			USelection* CurrentSelection = GEditor->GetSelectedActors();
-			CurrentSelection->GetSelectedObjects<AStaticMeshActor>(SelectedActors);
-			for (AActor* SelectedActor : SelectedActors)
+			// 首先从原有 PrefabActor (如果存在的话) 上 detch
+			for (AStaticMeshActor* MeshActor : SelectedMesh)
 			{
-				CollisionQueryParams.AddIgnoredActor(SelectedActor);
+				MeshActor->DetachFromActor(FDetachmentTransformRules(EDetachmentRule::KeepWorld, false));
 			}
-		}
 
-		bool bIsHit = World->LineTraceSingleByObjectType(HitResult, StartPos, EndPos, ECC_WorldStatic,
-		                                                 CollisionQueryParams);
-		if (bIsHit && Cast<AActor>(HitResult.GetActor()))
-		{
-			AActor* HitActor = HitResult.GetActor();
-			if (HitActor->IsA(APrefabActor::StaticClass()))
+			TWeakObjectPtr<APrefabActor> TargetPrefab;
+			bool bIsContained = false;
+			for (auto& PrefabStateElem : PrefabStateMap)
 			{
-				FString ActorName = HitResult.GetActor()->GetActorLabel();
-				GEngine->AddOnScreenDebugMessage(-1, 1.f, FColor::Yellow,
-				                                 FString::Printf(TEXT("%s is hit. "), *ActorName));
+				TWeakObjectPtr<APrefabActor> Prefab = PrefabStateElem.Key;
+				PrefabState& StateInfo = PrefabStateElem.Value;
+
+				if (!Prefab.Get())
+				{
+					continue;
+				}
+
+				FBox Bound = GetPrefabBounds(Prefab.Get());
+				for (AStaticMeshActor* Mesh : SelectedMesh)
+				{
+					bool Ret = IsBoxContainsPoint(Bound, Mesh->GetActorLocation());
+					if (Ret)
+					{
+						bIsContained = true;
+						TargetPrefab = Prefab;
+						break;
+					}
+				}
+
+				if (bIsContained)
+				{
+					break;
+				}
+			}
+
+			if (bIsContained && TargetPrefab.Get())
+			{
+				// 其他 Prefab 的 Attach 状态全部清空未 false
+				for (auto& PrefabElem : PrefabStateMap)
+				{
+					TWeakObjectPtr<APrefabActor> OtherPrefab = PrefabElem.Key;
+					PrefabState& State = PrefabElem.Value;
+					if (!OtherPrefab.Get())
+					{
+						continue;
+					}
+
+					if (TargetPrefab.Get() != OtherPrefab)
+					{
+						State.bIsContainAttachment = false;
+					}
+				}
+
+				if (!PrefabStateMap.Contains(TargetPrefab))
+				{
+					PrefabStateMap[TargetPrefab] = PrefabState(false);
+				}
+				PrefabStateMap[TargetPrefab].bIsContainAttachment = true;
+			}
+			else
+			{
+				RefreshPrefabStatus();
 			}
 		}
 	}
 	return false;
 }
 
+void MakeMeshScaledInWorldSpace(TWeakObjectPtr<AStaticMeshActor> MeshPtr, FVector Scale3D)
+{
+	if (!MeshPtr.Get())
+	{
+		return;
+	}
+
+	const FTransform& CompTransform = MeshPtr->GetActorTransform();
+
+	FVector GlobalAxisX{1.0f, 0.0f, 0.0f};
+	FVector GlobalAxisY{0.0f, 1.0f, 0.0f};
+	FVector GlobalAxisZ{0.0f, 0.0f, 1.0f};
+	FVector GlobalAxis[3] = {GlobalAxisX, GlobalAxisY, GlobalAxisZ};
+
+	FVector MeshCoordX = CompTransform.TransformVectorNoScale(FVector{1.0f, 0.0f, 0.0f});
+	FVector MeshCoordY = CompTransform.TransformVectorNoScale(FVector{0.0f, 1.0f, 0.0f});
+	FVector MeshCoordZ = CompTransform.TransformVectorNoScale(FVector{0.0f, 0.0f, 1.0f});
+	FVector MeshCoord[3] = {MeshCoordX, MeshCoordY, MeshCoordZ};
+
+	FVector ScaleFactor{1.0f};
+	{
+		for (int IndexScale = 0; IndexScale < 3; IndexScale ++)
+		{
+			if (Scale3D[IndexScale] == 1.0f)
+			{
+				continue;
+			}
+
+			for (int IndexMeshCoord = 0; IndexMeshCoord < 3; IndexMeshCoord ++)
+			{
+				float DotValue = FMath::Abs(FVector::DotProduct(
+					MeshCoord[IndexMeshCoord].GetSafeNormal(), GlobalAxis[IndexScale].GetSafeNormal()));
+
+				bool bIsPerpendicular = (DotValue < 0.001);
+				if (bIsPerpendicular)
+				{
+					continue;
+				}
+
+				ScaleFactor[IndexMeshCoord] *= Scale3D[IndexScale];
+			}
+		}
+	}
+
+	FVector OldScale3D = MeshPtr->GetActorRelativeScale3D();
+	MeshPtr->SetActorRelativeScale3D(ScaleFactor * OldScale3D);
+}
 
 bool FMeshEditorEditorMode::HandleAxisWidgetDelta(FEditorViewportClient* InViewportClient, const FVector& NotUsed0,
                                                   const FRotator& NotUsed1, const FVector& NotUsed2)
@@ -365,6 +557,8 @@ bool FMeshEditorEditorMode::HandleAxisWidgetDelta(FEditorViewportClient* InViewp
 	// Compute scale factors
 	FVector ScaleFactor{1.0f, 1.0f, 1.0f};
 	{
+		// 计算三方向轴放缩因子。如果对单个 Mesh 进行放缩，则 ScaleFactor 表示 Mesh 局部坐标空间的放缩因子
+		// 如果对批量 Mesh 进行放缩，则 ScaleFactor 表示世界坐标空间下所有 Mesh 包围盒的放缩因子
 		FVector AxisBaseVertex = AxisDragger->GetCurrentAxisBaseVertex();
 
 		FVector OriginAxisVec = AxisBaseVertex - DraggerBaseVertex;
@@ -418,8 +612,7 @@ bool FMeshEditorEditorMode::HandleAxisWidgetDelta(FEditorViewportClient* InViewp
 				TWeakObjectPtr<AStaticMeshActor> MeshPtr = AxisDragger->GetGroupMeshInfo().GroupMeshArray[k];
 				if (MeshPtr.Get())
 				{
-					FVector OldScale3D = MeshPtr->GetActorRelativeScale3D();
-					MeshPtr->SetActorRelativeScale3D(ScaleFactor * OldScale3D);
+					MakeMeshScaledInWorldSpace(MeshPtr, ScaleFactor);
 
 					FVector ActorLocationToBaseVec = MeshPtr->GetActorLocation() - DraggerBaseVertex;
 					FVector ActorLocationToBaseVecInLocal =
@@ -429,25 +622,15 @@ bool FMeshEditorEditorMode::HandleAxisWidgetDelta(FEditorViewportClient* InViewp
 					FVector FinalOffset = AxisDragger->GetTransform().TransformVector(ActorLocationToBaseVecInLocal);
 					MeshPtr->SetActorLocation(DraggerBaseVertex + FinalOffset);
 					MeshPtr->SetPivotOffset(FVector::ZeroVector);
-					CurrentMeshData->SelectedLocation = MeshPtr->GetActorLocation();
-					GUnrealEd->UpdatePivotLocationForSelection(true);
 				}
 			}
+			CurrentMeshData->SelectedLocation = AxisDragger->GetControlledCenter();
+			GUnrealEd->UpdatePivotLocationForSelection(true);
 		}
 		else
 		{
 			UE_LOG(LogTemp, Display, TEXT("FMeshEditorEditorMode::HandleAxisWidgetDelta() failed. "));
 		}
-		// TArray<TWeakObjectPtr<AStaticMeshActor>>& SelectedMeshActorArray = AxisDragger->CurrentSelectedMeshActorArray;
-		// for (int k = 0; k < SelectedMeshActorArray.Num() - 1; k ++)
-		// {
-		// 	TWeakObjectPtr<AStaticMeshActor> SelectedMeshPtr = SelectedMeshActorArray[k];
-		// 	if (SelectedMeshPtr.Get())
-		// 	{
-		// 		FVector OldScale3D = MeshActorPtr->GetActorRelativeScale3D();
-		// 		SelectedMeshPtr->SetActorRelativeScale3D(ScaleFactor * OldScale3D);
-		// 	}
-		// }
 	}
 	return true;
 }
@@ -570,6 +753,41 @@ bool FMeshEditorEditorMode::InputKey(FEditorViewportClient* ViewportClient, FVie
 			AxisDragger->SetCurrentAxis(EAxisList::None);
 		}
 	}
+
+	if (Event == IE_Released)
+	{
+		// 处理 AttachMode
+		if (IsInAttachMovementMode())
+		{
+			TArray<AStaticMeshActor*> SelectedMeshes;
+			USelection* CurrentEditorSelection = GEditor->GetSelectedActors();
+			CurrentEditorSelection->GetSelectedObjects<AStaticMeshActor>(SelectedMeshes);
+
+			if (SelectedMeshes.Num() > 0)
+			{
+				for (auto& PrefabStateElem : PrefabStateMap)
+				{
+					TWeakObjectPtr<APrefabActor> Prefab = PrefabStateElem.Key;
+					PrefabState& StateInfo = PrefabStateElem.Value;
+
+					if (!Prefab.Get() || !StateInfo.bIsContainAttachment)
+					{
+						continue;
+					}
+
+					for (AStaticMeshActor* Mesh : SelectedMeshes)
+					{
+						ParentActors(Prefab.Get(), Mesh);
+					}
+					break;
+				}
+			}
+		}
+		RefreshPrefabStatus();
+	}
+
+	// TODO 没有利用到 UE 的框架，所以每次输入按键时间都要刷新 Prefab 保存状态
+	RefreshPrefabs();
 	return false;
 }
 
@@ -617,6 +835,11 @@ FVector FMeshEditorEditorMode::GetWidgetLocation() const
 	if (CurrentMeshData != nullptr && CurrentMeshData->SelectedActors.Num() > 0 && CurrentMeshData->
 		SelectedLocation != FVector::ZeroVector)
 	{
+		if (AxisDragger->IsGroupDragger())
+		{
+			return AxisDragger->GetControlledCenter();
+		}
+
 		if (AxisDragger->GetCurrentAxisType() != EAxisList::None)
 		{
 			return CurrentMeshData->SelectedLocation;
@@ -660,26 +883,84 @@ void FMeshEditorEditorMode::CollectPressedKeysData(const FViewport* InViewport)
 	// bIsShiftKeyDown = InViewport->KeyState(EKeys::LeftShift) || InViewport->KeyState(EKeys::RightShift);
 	// bIsAltKeyDown = InViewport->KeyState(EKeys::LeftAlt) || InViewport->KeyState(EKeys::RightAlt);
 	bIsLeftMouseButtonDown = InViewport->KeyState(EKeys::LeftMouseButton);
-
-	// bool bLastSKeyDown = bIsSKeyDown;
-	// bIsSKeyDown = InViewport->KeyState(EKeys::S);
-
-	// if (bIsSKeyDown)
-	// {
-	// 	if (!bLastSKeyDown)
-	// 	{
-	// 		LastCoordSystemMode = GetModeManager()->GetCoordSystem();
-	// 	}
-	// 	GetModeManager()->SetCoordSystem(COORD_Local);
-	// }
-	// else
-	// {
-	// 	if (bLastSKeyDown)
-	// 	{
-	// 		GetModeManager()->SetCoordSystem(LastCoordSystemMode);
-	// 	}
-	// }
 }
+
+void DrawBrackets(FPrimitiveDrawInterface* PDI, const FLinearColor DrawColor, const float LineThickness,
+                  TArray<FVector>& BracketCorners, TArray<FVector>& GlobalAxis)
+{
+	const float BracketOffsetFactor = 0.2;
+	float BracketOffset;
+	float BracketPadding;
+	{
+		const float DeltaX = (BracketCorners[3] - BracketCorners[0]).Length();
+		const float DeltaY = (BracketCorners[1] - BracketCorners[0]).Length();
+		const float DeltaZ = (BracketCorners[4] - BracketCorners[0]).Length();
+		BracketOffset = FMath::Min(FMath::Min(DeltaX, DeltaY), DeltaZ) * BracketOffsetFactor;
+		BracketPadding = BracketOffset * 0.08;
+	}
+
+	const int32 DIR_X[] = {1, 1, -1, -1, 1, 1, -1, -1};
+	const int32 DIR_Y[] = {1, -1, -1, 1, 1, -1, -1, 1};
+	const int32 DIR_Z[] = {1, 1, 1, 1, -1, -1, -1, -1};
+
+	for (int32 BracketCornerIndex = 0; BracketCornerIndex < BracketCorners.Num(); ++BracketCornerIndex)
+	{
+		// Direction corner axis should be pointing based on min/max
+		const FVector CORNER = BracketCorners[BracketCornerIndex]
+			- (BracketPadding * DIR_X[BracketCornerIndex] * GlobalAxis[0])
+			- (BracketPadding * DIR_Y[BracketCornerIndex] * GlobalAxis[1])
+			- (BracketPadding * DIR_Z[BracketCornerIndex] * GlobalAxis[2]);
+
+		PDI->DrawLine(CORNER, CORNER + (BracketOffset * DIR_X[BracketCornerIndex] * GlobalAxis[0]),
+		              DrawColor, SDPG_Foreground, LineThickness);
+		PDI->DrawLine(CORNER, CORNER + (BracketOffset * DIR_Y[BracketCornerIndex] * GlobalAxis[1]),
+		              DrawColor, SDPG_Foreground, LineThickness);
+		PDI->DrawLine(CORNER, CORNER + (BracketOffset * DIR_Z[BracketCornerIndex] * GlobalAxis[2]),
+		              DrawColor, SDPG_Foreground, LineThickness);
+	}
+}
+
+void FMeshEditorEditorMode::DrawBracketForPrefab(FPrimitiveDrawInterface* PDI, const FViewport* Viewport,
+                                                 TWeakObjectPtr<APrefabActor> Prefab, PrefabState& State)
+{
+	if (!Prefab.Get())
+	{
+		return;
+	}
+
+	TArray<FVector> Corners;
+	FBox ActorBounds = GetPrefabBounds(Prefab.Get());
+
+	FVector Min = ActorBounds.Min;
+	FVector Max = ActorBounds.Max;
+
+	Corners.Add(FVector(Min.X, Min.Y, Min.Z));
+	Corners.Add(FVector(Min.X, Max.Y, Min.Z));
+	Corners.Add(FVector(Max.X, Max.Y, Min.Z));
+	Corners.Add(FVector(Max.X, Min.Y, Min.Z));
+
+	Corners.Add(FVector(Min.X, Min.Y, Max.Z));
+	Corners.Add(FVector(Min.X, Max.Y, Max.Z));
+	Corners.Add(FVector(Max.X, Max.Y, Max.Z));
+	Corners.Add(FVector(Max.X, Min.Y, Max.Z));
+
+	TArray<FVector> GlobalAxis;
+	GlobalAxis.Add(FVector(1.0f, 0.0f, 0.0f));
+	GlobalAxis.Add(FVector(0.0f, 1.0f, 0.0f));
+	GlobalAxis.Add(FVector(0.0f, 0.0f, 1.0f));
+
+	// TODO move to settings
+	const FLinearColor PREFAB_BRACKET_COLOR_IN_ATTACH_MODE = {0.0f, 1.0f, 0.0f};
+	const FLinearColor PREFAB_BRACKET_SELECTED_COLOR_IN_ATTACH_MODE = FColor::Yellow;
+
+	const float Thickness = 10.0f;
+
+	FLinearColor DrawColor = State.bIsContainAttachment
+		                         ? PREFAB_BRACKET_SELECTED_COLOR_IN_ATTACH_MODE
+		                         : PREFAB_BRACKET_COLOR_IN_ATTACH_MODE;
+	DrawBrackets(PDI, DrawColor, Thickness, Corners, GlobalAxis);
+}
+
 
 void FMeshEditorEditorMode::Render(const FSceneView* View, FViewport* Viewport, FPrimitiveDrawInterface* PDI)
 {
@@ -727,6 +1008,24 @@ void FMeshEditorEditorMode::Render(const FSceneView* View, FViewport* Viewport, 
 				PDI->SetHitProxy(HitResult);
 				PDI->DrawLine(FirstEndpointLocation, SecondEndpointLocation, Settings->MeshEdgeColor,
 				              SDPG_World, Settings->MeshEdgeThickness);
+			}
+		}
+#endif
+
+#ifdef USING_PREFAB_PLUGIN
+		if (IsInAttachMovementMode())
+		{
+			// Draw bracket box for prefab if in attachment mode
+			for (auto& PrefabStateElem : PrefabStateMap)
+			{
+				TWeakObjectPtr<APrefabActor> Prefab = PrefabStateElem.Key;
+				PrefabState& State = PrefabStateElem.Value;
+				if (!Prefab.Get())
+				{
+					continue;
+				}
+
+				DrawBracketForPrefab(PDI, Viewport, Prefab, State);
 			}
 		}
 #endif
@@ -876,47 +1175,12 @@ void FMeshEditorEditorMode::DrawBoxDraggerForStaticMeshActors(
 	AxisDragger->UpdateControlledMeshGroup(MeshActorArray);
 
 	TArray<FVector> DraggerBracketCorners;
-	DrawBracket(PDI, Viewport, DraggerBracketCorners);
-	DrawDragger(PDI, View, Viewport, DraggerBracketCorners);
+	DrawBracketForDragger(PDI, Viewport, DraggerBracketCorners);
+	DrawHandleForDragger(PDI, View, Viewport, DraggerBracketCorners);
 }
 
-void DrawBrackets(FPrimitiveDrawInterface* PDI, const FLinearColor DrawColor, const float LineThickness,
-                  TArray<FVector>& BracketCorners, TArray<FVector>& GlobalAxis)
-{
-	const float BracketOffsetFactor = 0.2;
-	float BracketOffset;
-	float BracketPadding;
-	{
-		const float DeltaX = (BracketCorners[3] - BracketCorners[0]).Length();
-		const float DeltaY = (BracketCorners[1] - BracketCorners[0]).Length();
-		const float DeltaZ = (BracketCorners[4] - BracketCorners[0]).Length();
-		BracketOffset = FMath::Min(FMath::Min(DeltaX, DeltaY), DeltaZ) * BracketOffsetFactor;
-		BracketPadding = BracketOffset * 0.08;
-	}
-
-	const int32 DIR_X[] = {1, 1, -1, -1, 1, 1, -1, -1};
-	const int32 DIR_Y[] = {1, -1, -1, 1, 1, -1, -1, 1};
-	const int32 DIR_Z[] = {1, 1, 1, 1, -1, -1, -1, -1};
-
-	for (int32 BracketCornerIndex = 0; BracketCornerIndex < BracketCorners.Num(); ++BracketCornerIndex)
-	{
-		// Direction corner axis should be pointing based on min/max
-		const FVector CORNER = BracketCorners[BracketCornerIndex]
-			- (BracketPadding * DIR_X[BracketCornerIndex] * GlobalAxis[0])
-			- (BracketPadding * DIR_Y[BracketCornerIndex] * GlobalAxis[1])
-			- (BracketPadding * DIR_Z[BracketCornerIndex] * GlobalAxis[2]);
-
-		PDI->DrawLine(CORNER, CORNER + (BracketOffset * DIR_X[BracketCornerIndex] * GlobalAxis[0]),
-		              DrawColor, SDPG_Foreground, LineThickness);
-		PDI->DrawLine(CORNER, CORNER + (BracketOffset * DIR_Y[BracketCornerIndex] * GlobalAxis[1]),
-		              DrawColor, SDPG_Foreground, LineThickness);
-		PDI->DrawLine(CORNER, CORNER + (BracketOffset * DIR_Z[BracketCornerIndex] * GlobalAxis[2]),
-		              DrawColor, SDPG_Foreground, LineThickness);
-	}
-}
-
-void FMeshEditorEditorMode::DrawBracket(FPrimitiveDrawInterface* PDI, FViewport* Viewport,
-                                        TArray<FVector>& OutVerts)
+void FMeshEditorEditorMode::DrawBracketForDragger(FPrimitiveDrawInterface* PDI, FViewport* Viewport,
+                                                  TArray<FVector>& OutVerts)
 {
 	if (AxisDragger->IsMeshDragger())
 	{
@@ -981,7 +1245,7 @@ void FMeshEditorEditorMode::DrawBracket(FPrimitiveDrawInterface* PDI, FViewport*
 	{
 		// Draw bracket for group
 		const FLinearColor GROUP_MESH_BRACKET_COLOR = {0.0f, 0.5f, 0.0f};
-		const float GROUP_BRACKET_THICKNESS = 3.0f;
+		const float GROUP_BRACKET_THICKNESS = 8.0f;
 		TArray<FVector> BracketCorners;
 		TArray<FVector> GlobalAxis;
 
@@ -1016,8 +1280,8 @@ void ComputeAxisBases(const TArray<FVector>& InCorners, TArray<FVector>& OutAxis
 	OutAxisBases.Add((InCorners[1] + InCorners[2] + InCorners[5] + InCorners[6]) / 4.0f);
 }
 
-void FMeshEditorEditorMode::DrawDragger(FPrimitiveDrawInterface* PDI, const FSceneView* View,
-                                        FViewport* Viewport, const TArray<FVector>& InCorners)
+void FMeshEditorEditorMode::DrawHandleForDragger(FPrimitiveDrawInterface* PDI, const FSceneView* View,
+                                                 FViewport* Viewport, const TArray<FVector>& InCorners)
 {
 	if (InCorners.Num() == 0)
 	{
@@ -1026,8 +1290,25 @@ void FMeshEditorEditorMode::DrawDragger(FPrimitiveDrawInterface* PDI, const FSce
 
 	check(InCorners.Num() == 8);
 
+	// 判断 dragger 当前操作的是单个 mesh 还是 mesh group，用于确定 axis 位置
 	TArray<FVector> AxisBases;
 	ComputeAxisBases(InCorners, AxisBases);
+	/*
+	 // TODO
+	if (AxisDragger->IsMeshDragger())
+	{
+		ComputeAxisBases(InCorners, AxisBases);
+	}
+	else if (AxisDragger->IsGroupDragger())
+	{
+	}
+	else
+	{
+		// 当前 dragger 不操作任何类型，不做处理
+		return;
+	}
+	*/
+
 
 	TArray<EAxisList::Type> AxisDir = {
 		EAxisList::Type::Z, EAxisList::Type::Z,
@@ -1239,6 +1520,39 @@ void FMeshEditorEditorMode::InvalidateHitProxies()
 bool FMeshEditorEditorMode::IsInAttachMovementMode()
 {
 	return bIsBKeyDown;
+}
+
+void FMeshEditorEditorMode::RefreshPrefabs()
+{
+	// TODO 采用 UE 自带框架搜索 PrefabActor
+	for (auto PrefabPtr : APrefabActor::PrefabContainer)
+	{
+		if (!PrefabPtr.Get())
+		{
+			continue;
+		}
+
+		if (!PrefabStateMap.Contains(PrefabPtr))
+		{
+			PrefabStateMap.Add(PrefabPtr, PrefabState(false));
+		}
+	}
+}
+
+void FMeshEditorEditorMode::RefreshPrefabStatus()
+{
+	// TODO 采用 UE 自带框架搜索 PrefabActor
+	for (auto& PrefabElem : PrefabStateMap)
+	{
+		TWeakObjectPtr<APrefabActor> Prefab = PrefabElem.Key;
+		PrefabState& State = PrefabElem.Value;
+		if (!Prefab.Get())
+		{
+			continue;
+		}
+
+		State.bIsContainAttachment = false;
+	}
 }
 
 

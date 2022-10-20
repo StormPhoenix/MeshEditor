@@ -6,6 +6,7 @@
 #include "EdMode.h"
 #include "Dragger/AxisDragger.h"
 #include "Dragger/DragTransaction.h"
+#include "Prefab/PrefabActor.h"
 #include "MeshEditorEditorMode.generated.h"
 
 DECLARE_DELEGATE(FOnCollectingMeshDataFinished);
@@ -17,6 +18,17 @@ struct FMeshEdgeData
 	FVector2D FirstEndpointOnScreenPosition{};
 	FVector2D SecondEndpointOnScreenPosition{};
 	AActor* EdgeOwnerActor{nullptr};
+};
+
+struct PrefabState
+{
+	// 拖拽附加模式下使用，表示当前拖拽物体是否已被包含
+	bool bIsContainAttachment;
+
+	PrefabState(bool IsContainAttachment) :
+		bIsContainAttachment(IsContainAttachment)
+	{
+	}
 };
 
 UCLASS()
@@ -90,10 +102,10 @@ private:
 	void DrawBoxDraggerForStaticMeshActors(FPrimitiveDrawInterface* PDI, const FSceneView* View, FViewport* Viewport,
 	                                       TArray<TWeakObjectPtr<AStaticMeshActor>>& MeshActorArray);
 
-	void DrawDragger(FPrimitiveDrawInterface* PDI, const FSceneView* View,
-	                            FViewport* Viewport, const TArray<FVector>& InCorners);
+	void DrawHandleForDragger(FPrimitiveDrawInterface* PDI, const FSceneView* View,
+	                          FViewport* Viewport, const TArray<FVector>& InCorners);
 
-	void DrawBracket(FPrimitiveDrawInterface* PDI, FViewport* Viewport, TArray<FVector>& OutVerts);
+	void DrawBracketForDragger(FPrimitiveDrawInterface* PDI, FViewport* Viewport, TArray<FVector>& OutVerts);
 
 	void UpdateSelection();
 
@@ -106,6 +118,13 @@ private:
 
 	bool HandlePrefabClickEvent(FEditorViewportClient* InViewportClient, HHitProxy* HitProxy,
 	                            const FViewportClick& Click);
+
+	void RefreshPrefabs();
+
+	void RefreshPrefabStatus();
+
+	void DrawBracketForPrefab(FPrimitiveDrawInterface* PDI, const FViewport* Viewport,
+	                          TWeakObjectPtr<APrefabActor> Prefab, PrefabState& State);
 
 public:
 	TArray<FMeshEdgeData> LastCapturedEdgeData;
@@ -127,6 +146,8 @@ private:
 	bool bIsTracking = false;
 	bool bIsCtrlKeyDown = {false};
 	bool bIsBKeyDown = {false};
+
+	TMap<TWeakObjectPtr<APrefabActor>, PrefabState> PrefabStateMap;
 
 	float DPIScale{1.f};
 	FVector2D MouseOnScreenPosition{};
