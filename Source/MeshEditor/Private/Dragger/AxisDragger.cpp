@@ -1,16 +1,21 @@
 ﻿#include "AxisDragger.h"
+
 #include "Materials/MaterialInstanceDynamic.h"
 
 
-FAxisDragger::FAxisDragger()
+FAxisDragger::FAxisDragger(): DragMode(WrapMode)
 {
 	// FLinearColor AxisColor = FLinearColor(0.594f, 0.0197f, 0.0f);
-	FLinearColor AxisColor = FLinearColor(0.0f, 1.0f, 0.0f);
+	FLinearColor WrapAxisColor = FLinearColor(0.0f, 1.0f, 0.0f);
+	FLinearColor CenterAxisColor = FLinearColor(0.0f, 0.0f, 1.0f);
 	FLinearColor CurrentColor = FColor::Yellow;
 
 	UMaterial* AxisMaterialBase = GEngine->ArrowMaterial;
-	AxisMaterial = UMaterialInstanceDynamic::Create(AxisMaterialBase, nullptr);
-	AxisMaterial->SetVectorParameterValue("GizmoColor", AxisColor);
+	WrapAxisMaterial = UMaterialInstanceDynamic::Create(AxisMaterialBase, nullptr);
+	WrapAxisMaterial->SetVectorParameterValue("GizmoColor", WrapAxisColor);
+
+	CenterAxisMaterial = UMaterialInstanceDynamic::Create(AxisMaterialBase, nullptr);
+	CenterAxisMaterial->SetVectorParameterValue("GizmoColor", CenterAxisColor);
 
 	CurrentAxisMaterial = UMaterialInstanceDynamic::Create(AxisMaterialBase, nullptr);
 	CurrentAxisMaterial->SetVectorParameterValue("GizmoColor", CurrentColor);
@@ -137,13 +142,13 @@ void FAxisDragger::RenderAxis(FPrimitiveDrawInterface* PDI, const FSceneView* Vi
 	FRotationMatrix RotationMatrix = CalculateCylinderRotationMatrix(InAxis, WidgetTransform.GetScale3D(), bFlipped);
 	FMatrix WidgetMatrix = WidgetTransform.GetRotation().ToMatrix() * FTranslationMatrix(InLocation);
 
-	const float HalfHeight = 20.5;
+	const float HalfHeight = DragMode == WrapMode ? 20.5 : 30;
 	const float AxisLength = 2.0f * HalfHeight;
 	const float CylinderRadius = 2.4;
 	const FVector Offset(0, 0, HalfHeight);
 
 	PDI->SetHitProxy(new HAxisDraggerProxy(InAxis, bFlipped));
-	UMaterialInstanceDynamic* InMaterial = AxisMaterial;
+	UMaterialInstanceDynamic* InMaterial = DragMode == WrapMode ? WrapAxisMaterial : CenterAxisMaterial;
 	if (InAxis == CurrentAxisType && bFlipped == CurrentAxisFlipped)
 	{
 		InMaterial = CurrentAxisMaterial;
@@ -182,11 +187,293 @@ void FAxisDragger::RenderAxis(FPrimitiveDrawInterface* PDI, const FSceneView* Vi
 	PDI->SetHitProxy(nullptr);
 }
 
+void FAxisDragger::RenderHandler(FPrimitiveDrawInterface* PDI, const FSceneView* View)
+{
+	if (BaseVerts.Num() == 0 || BaseVerts.Num() != 6)
+	{
+		return;
+	}
+
+	TArray<EAxisList::Type> AxisDir = {
+		EAxisList::Type::Z, EAxisList::Type::Z,
+		EAxisList::Type::X, EAxisList::Type::X,
+		EAxisList::Type::Y, EAxisList::Type::Y
+	};
+
+	TArray<bool> AxisFlip = {
+		true, false,
+		true, false,
+		true, false
+	};
+
+	if (DragMode == WrapMode)
+	{
+		// 包围盒模式，绘制留方向轴
+		for (int32 BaseIndex = 0; BaseIndex < BaseVerts.Num(); BaseIndex ++)
+		{
+			RenderAxis(PDI, View, BaseVerts[BaseIndex], AxisDir[BaseIndex], AxisFlip[BaseIndex], true);
+		}
+	}
+	else if (DragMode == CenterMode)
+	{
+		// 中心放缩模式，绘制三方向轴
+		FVector Center = GetControlledCenter();
+		const int Offset = 2;
+		for (int i = 0; i < 3; i ++)
+		{
+			RenderAxis(PDI, View, Center, AxisDir[i * Offset], false, true);
+		}
+	}
+}
+
+
 void FAxisDragger::AddReferencedObjects(FReferenceCollector& Collector)
 {
-	Collector.AddReferencedObject(AxisMaterial);
+	Collector.AddReferencedObject(WrapAxisMaterial);
+	Collector.AddReferencedObject(CenterAxisMaterial);
 	Collector.AddReferencedObject(CurrentAxisMaterial);
 }
+
+float ComputeScaleComponent(FVector& Base, FVector& DragDelta, int Axis)
+{
+	float Result = 1.0;
+	if (FMath::Abs(DragDelta[Axis]) > 0.001 && FMath::Abs(Base[Axis]) > 0.001)
+	{
+		float ScaleFactor = FMath::Abs(
+			(Base[Axis] + DragDelta[Axis]) / Base[Axis]);
+		if (!FMath::IsNaN(ScaleFactor))
+		{
+			Result = ScaleFactor;
+		}
+	}
+	return Result;
+}
+
+bool ComputeScaleRatio(FVector BeginDragVertex, FVector ScaleBaseVertex, const FTransform& LocalToWorld,
+                       const FVector& DragDelta, FVector& OutScaleRatio)
+{
+	// 计算三方向轴放缩因子。如果对单个 Mesh 进行放缩，则 ScaleFactor 表示 Mesh 局部坐标空间的放缩因子
+	// 如果对批量 Mesh 进行放缩，则 ScaleFactor 表示世界坐标空间下所有 Mesh 包围盒的放缩因子
+	// FVector AxisBaseVertex = GetCurrentAxisBaseVertex();
+	bool bDragSuccess = true;
+
+	FVector DragInLocal = LocalToWorld.InverseTransformVector(DragDelta);
+	FVector OriginAxisVec = BeginDragVertex - ScaleBaseVertex;
+
+	// transform to local space
+	FVector OriginAxisVecInLocal = LocalToWorld.InverseTransformVector(OriginAxisVec);
+
+	float DotValue = FMath::Abs(
+		FVector::DotProduct(DragDelta.GetSafeNormal(), OriginAxisVec.GetSafeNormal()));
+	bool bIsPerpendicular = (DotValue < 0.001);
+	if (bIsPerpendicular)
+	{
+		bDragSuccess = false;
+	}
+	else
+	{
+		float DragLenLocal = FVector::DotProduct(OriginAxisVecInLocal.GetSafeNormal(), DragInLocal);
+		DragInLocal = OriginAxisVecInLocal.GetSafeNormal() * DragLenLocal;
+		for (int Axis = 0; Axis < 3; Axis ++)
+		{
+			OutScaleRatio[Axis] = ComputeScaleComponent(OriginAxisVecInLocal, DragInLocal, Axis);
+		}
+	}
+	return bDragSuccess;
+}
+
+void MakeMeshScaledInWorldSpace(TWeakObjectPtr<AStaticMeshActor> MeshPtr, FVector Scale3D)
+{
+	if (!MeshPtr.Get())
+	{
+		return;
+	}
+
+	const FTransform& CompTransform = MeshPtr->GetActorTransform();
+
+	FVector GlobalAxisX{1.0f, 0.0f, 0.0f};
+	FVector GlobalAxisY{0.0f, 1.0f, 0.0f};
+	FVector GlobalAxisZ{0.0f, 0.0f, 1.0f};
+	FVector GlobalAxis[3] = {GlobalAxisX, GlobalAxisY, GlobalAxisZ};
+
+	FVector MeshCoordX = CompTransform.TransformVectorNoScale(FVector{1.0f, 0.0f, 0.0f});
+	FVector MeshCoordY = CompTransform.TransformVectorNoScale(FVector{0.0f, 1.0f, 0.0f});
+	FVector MeshCoordZ = CompTransform.TransformVectorNoScale(FVector{0.0f, 0.0f, 1.0f});
+	FVector MeshCoord[3] = {MeshCoordX, MeshCoordY, MeshCoordZ};
+
+	FVector ScaleFactor{1.0f};
+	{
+		for (int IndexScale = 0; IndexScale < 3; IndexScale ++)
+		{
+			if (Scale3D[IndexScale] == 1.0f)
+			{
+				continue;
+			}
+
+			for (int IndexMeshCoord = 0; IndexMeshCoord < 3; IndexMeshCoord ++)
+			{
+				float DotValue = FMath::Abs(FVector::DotProduct(
+					MeshCoord[IndexMeshCoord].GetSafeNormal(), GlobalAxis[IndexScale].GetSafeNormal()));
+
+				bool bIsPerpendicular = (DotValue < 0.001);
+				if (bIsPerpendicular)
+				{
+					continue;
+				}
+
+				ScaleFactor[IndexMeshCoord] *= Scale3D[IndexScale];
+			}
+		}
+	}
+
+	FVector OldScale3D = MeshPtr->GetActorRelativeScale3D();
+	MeshPtr->SetActorRelativeScale3D(ScaleFactor * OldScale3D);
+}
+
+void MakeMeshLocationScaledInWorldSpace(TWeakObjectPtr<AStaticMeshActor> MeshPtr, const FTransform& LocalToWorld,
+                                        FVector ScaleBaseVertex, FVector ScaleFactor)
+{
+	FVector ActorLocationToBaseVec = MeshPtr->GetActorLocation() - ScaleBaseVertex;
+	FVector ActorLocationToBaseVecInLocal =
+		LocalToWorld.InverseTransformVector(ActorLocationToBaseVec);
+	ActorLocationToBaseVecInLocal *= ScaleFactor;
+
+	FVector FinalOffset = LocalToWorld.TransformVector(ActorLocationToBaseVecInLocal);
+	MeshPtr->SetActorLocation(ScaleBaseVertex + FinalOffset);
+	MeshPtr->SetPivotOffset(FVector::ZeroVector);
+}
+
+FVector FAxisDragger::GetControlledCenter() const
+{
+	if (BaseVerts.Num() != 6)
+	{
+		return FVector::Zero();
+	}
+
+	return (BaseVerts[0] + BaseVerts[1]) / 2.0;
+}
+
+FVector FAxisDragger::GetExpectedPivot()
+{
+	if (IsMeshDragger())
+	{
+		return MeshActorPtr->GetActorLocation();
+	}
+	else if (IsGroupDragger())
+	{
+		if (BaseVerts.Num() != 6)
+		{
+			return FVector::Zero();
+		}
+		return BaseVerts[0];
+	}
+	else
+	{
+		return FVector::ZeroVector;
+	}
+}
+
+void FAxisDragger::ResetInitialTranslationOffset()
+{
+	bAbsoluteTranslationInitialOffsetCached = false;
+}
+
+bool FAxisDragger::IsGroupDragger() const
+{
+	if (!MeshActorPtr.Get() && GroupMeshInfo.GroupMeshArray.Num() > 1)
+	{
+		return true;
+	}
+	else
+	{
+		return false;
+	}
+}
+
+bool FAxisDragger::IsCenterMode() const
+{
+	return DragMode == CenterMode;
+}
+
+bool FAxisDragger::IsWrapMode() const
+{
+	return DragMode == WrapMode;
+}
+
+bool FAxisDragger::IsMeshDragger() const
+{
+	if (MeshActorPtr.Get() && GroupMeshInfo.GroupMeshArray.Num() <= 0)
+	{
+		return true;
+	}
+	else
+	{
+		return false;
+	}
+}
+
+bool FAxisDragger::DoWork(FEditorViewportClient* InViewportClient, const FSceneView* EdModeView)
+{
+	FVector Drag(ForceInitToZero);
+	FRotator Rot(ForceInitToZero);
+	FVector Scale(ForceInitToZero);
+	AbsoluteTranslationConvertMouseToDragRot(EdModeView, InViewportClient, Drag, Rot, Scale);
+
+	bool bDragSuccess = false;
+	FVector ScaleFactor{1.0f, 1.0f, 1.0f};
+	FVector ScaleBaseVertex = FVector::ZeroVector;
+
+	if (DragMode == EDragMode::WrapMode)
+	{
+		FVector BeginDragVertex = GetCurrentAxisBaseVertex();
+		ScaleBaseVertex = GetOppositeAxisBaseVertex();
+
+		// Compute scale factors
+		bDragSuccess = ComputeScaleRatio(BeginDragVertex, ScaleBaseVertex, GetTransform(),
+		                                 Drag, ScaleFactor);
+	}
+	else if (DragMode == EDragMode::CenterMode)
+	{
+		FVector BeginDragVertex = GetBoundFaceCenterByAxisDir();
+		ScaleBaseVertex = GetControlledCenter();
+
+		// Compute scale factors
+		bDragSuccess = ComputeScaleRatio(BeginDragVertex, ScaleBaseVertex, GetTransform(),
+		                                 Drag, ScaleFactor);
+	}
+
+	if (bDragSuccess)
+	{
+		if (IsMeshDragger())
+		{
+			if (MeshActorPtr.Get())
+			{
+				FVector OldScale3D = MeshActorPtr->GetActorRelativeScale3D();
+				MeshActorPtr->SetActorRelativeScale3D(ScaleFactor * OldScale3D);
+				MakeMeshLocationScaledInWorldSpace(MeshActorPtr, GetTransform(), ScaleBaseVertex, ScaleFactor);
+			}
+		}
+		else if (IsGroupDragger())
+		{
+			for (int k = 0; k < GetGroupMeshInfo().GroupMeshArray.Num(); k ++)
+			{
+				TWeakObjectPtr<AStaticMeshActor> MeshPtr = GetGroupMeshInfo().GroupMeshArray[k];
+				if (MeshPtr.Get())
+				{
+					MakeMeshScaledInWorldSpace(MeshPtr, ScaleFactor);
+					MakeMeshLocationScaledInWorldSpace(MeshPtr, GetTransform(), ScaleBaseVertex, ScaleFactor);
+				}
+			}
+		}
+		else
+		{
+			UE_LOG(LogTemp, Display, TEXT("FMeshEditorEditorMode::HandleAxisWidgetDelta() failed. "));
+			return false;
+		}
+	}
+	return true;
+}
+
 
 void FAxisDragger::SetAxisBaseVerts(const TArray<FVector>& InBaseVerts)
 {
@@ -212,7 +499,9 @@ void FAxisDragger::AbsoluteTranslationConvertMouseToDragRot(const FSceneView* In
 	check(InViewportClient->Viewport);
 	FVector2D MousePosition(InViewportClient->Viewport->GetMouseX(), InViewportClient->Viewport->GetMouseY());
 
-	AbsoluteTranslationConvertMouseMovementToAxisMovement(InView, InViewportClient, GetCurrentAxisBaseVertex(),
+	// AbsoluteTranslationConvertMouseMovementToAxisMovement(InView, InViewportClient, GetCurrentAxisBaseVertex(),
+	// MousePosition, OutDrag, OutRotation, OutScale);
+	AbsoluteTranslationConvertMouseMovementToAxisMovement(InView, InViewportClient, GetBoundFaceCenterByAxisDir(),
 	                                                      MousePosition, OutDrag, OutRotation, OutScale);
 }
 
@@ -409,7 +698,7 @@ void ComputeMeshBaseVerts(TWeakObjectPtr<AStaticMeshActor> MeshPtr, TArray<FVect
 	OutBaseVerts.Add((BracketCorners[1] + BracketCorners[2] + BracketCorners[5] + BracketCorners[6]) / 4.0f);
 }
 
-FVector FAxisDragger::GetMeshBaseVertex(const TArray<FVector>& InBaseVerts) const 
+FVector FAxisDragger::GetMeshBaseVertex(const TArray<FVector>& InBaseVerts) const
 {
 	if (InBaseVerts.Num() <= 0)
 	{
@@ -500,17 +789,16 @@ void FAxisDragger::UpdateControlledMeshGroup(TArray<TWeakObjectPtr<AStaticMeshAc
 	}
 }
 
-
-FVector FAxisDragger::GetCurrentAxisBaseVertex() const
+FVector FAxisDragger::GetCurrentBaseVertexInCenterMode() const
 {
-	if (BaseVerts.Num() <= 0)
-	{
-		return FVector::ZeroVector;
-	}
+	return (BaseVerts[0] + BaseVerts[1]) / 2.0f;
+}
 
+FVector FAxisDragger::GetCurrentBaseVertexInWarpMode(bool bAxisFlipped) const
+{
 	if (CurrentAxisType == EAxisList::X)
 	{
-		if (!CurrentAxisFlipped)
+		if (!bAxisFlipped)
 		{
 			return BaseVerts[3];
 		}
@@ -518,7 +806,7 @@ FVector FAxisDragger::GetCurrentAxisBaseVertex() const
 	}
 	if (CurrentAxisType == EAxisList::Y)
 	{
-		if (!CurrentAxisFlipped)
+		if (!bAxisFlipped)
 		{
 			return BaseVerts[5];
 		}
@@ -526,7 +814,7 @@ FVector FAxisDragger::GetCurrentAxisBaseVertex() const
 	}
 	if (CurrentAxisType == EAxisList::Z)
 	{
-		if (!CurrentAxisFlipped)
+		if (!bAxisFlipped)
 		{
 			return BaseVerts[1];
 		}
@@ -535,9 +823,50 @@ FVector FAxisDragger::GetCurrentAxisBaseVertex() const
 	return FVector::Zero();
 }
 
+FVector FAxisDragger::GetBoundFaceCenterByAxisDir() const
+{
+	if (BaseVerts.Num() <= 0)
+	{
+		return FVector::ZeroVector;
+	}
+	return GetCurrentBaseVertexInWarpMode(CurrentAxisFlipped);
+}
+
+
+FVector FAxisDragger::GetCurrentAxisBaseVertex() const
+{
+	if (BaseVerts.Num() <= 0)
+	{
+		return FVector::ZeroVector;
+	}
+
+	if (DragMode == WrapMode)
+	{
+		return GetCurrentBaseVertexInWarpMode(CurrentAxisFlipped);
+	}
+	else if (DragMode == CenterMode)
+	{
+		return GetCurrentBaseVertexInCenterMode();
+	}
+	return FVector::ZeroVector;
+}
+
 FVector FAxisDragger::GetOppositeAxisBaseVertex() const
 {
-	return GetMeshBaseVertex(BaseVerts);
+	if (BaseVerts.Num() <= 0)
+	{
+		return FVector::ZeroVector;
+	}
+
+	if (DragMode == WrapMode)
+	{
+		return GetCurrentBaseVertexInWarpMode(!CurrentAxisFlipped);
+	}
+	else if (DragMode == CenterMode)
+	{
+		return GetCurrentBaseVertexInCenterMode();
+	}
+	return FVector::ZeroVector;
 }
 
 IMPLEMENT_HIT_PROXY(HAxisDraggerProxy, HHitProxy);

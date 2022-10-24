@@ -1,8 +1,11 @@
 ﻿#pragma once
 
-#include "CoreMinimal.h"
+#include "SceneView.h"
+#include "Math/Axis.h"
 #include "HitProxies.h"
+#include "CoreMinimal.h"
 #include "Engine/StaticMeshActor.h"
+#include "SceneManagement.h"
 #include "UObject/GCObject.h"
 
 struct FMovementParams
@@ -39,13 +42,20 @@ struct FGroupMeshInfo
 	TArray<TArray<FVector>> EachMeshBaseVerts;
 };
 
+enum EDragMode
+{
+	// Dragger 以包裹边界为基点放缩 
+	WrapMode = 1,
+	// Dragger 以中心点放缩
+	CenterMode = 2,
+};
+
 class FAxisDragger : public FGCObject
 {
 public:
 	FAxisDragger();
 
-	void RenderAxis(FPrimitiveDrawInterface* PDI, const FSceneView* View, const FVector& InLocation,
-	                EAxisList::Type InAxis, bool bFlipped, bool bCubeHead = false);
+	void RenderHandler(FPrimitiveDrawInterface* PDI, const FSceneView* View);
 
 	virtual void AddReferencedObjects(FReferenceCollector& Collector) override;
 
@@ -54,7 +64,7 @@ public:
 		return "FAxisWidget";
 	}
 
-	void SetCurrentAxis(EAxisList::Type InAixsType, bool InFlipped = true)
+	void SetCurrentAxisType(EAxisList::Type InAixsType, bool InFlipped = true)
 	{
 		CurrentAxisType = InAixsType;
 		CurrentAxisFlipped = InFlipped;
@@ -65,14 +75,16 @@ public:
 		return CurrentAxisType;
 	}
 
-	bool IsAxisFlipped() const
-	{
-		return CurrentAxisFlipped;
-	}
+	// 执行拖拽拉伸操作
+	bool DoWork(FEditorViewportClient* InViewportClient, const FSceneView* EdModeView);
 
 	void SetAxisBaseVerts(const TArray<FVector>& InBaseVerts);
 
+	// 获取当前拖拽箭头的起始位置
 	FVector GetCurrentAxisBaseVertex() const;
+
+	// 获取当前箭头指向的包围盒的一面的中心点	
+	FVector GetBoundFaceCenterByAxisDir() const;
 
 	FVector GetOppositeAxisBaseVertex() const;
 
@@ -91,6 +103,7 @@ public:
 
 	void UpdateControlledMeshGroup(TArray<TWeakObjectPtr<AStaticMeshActor>> InActors);
 
+	// TODO remove
 	FVector GetMeshBaseVertex(int MeshIndex) const;
 
 	TWeakObjectPtr<AStaticMeshActor> GetMeshActor()
@@ -98,37 +111,28 @@ public:
 		return MeshActorPtr;
 	}
 
-	void AbsoluteTranslationConvertMouseToDragRot(const FSceneView* InView, FEditorViewportClient* InViewportClient,
-	                                              FVector& OutDrag, FRotator& OutRotation, FVector& OutScale);
-
-	void ResetInitialTranslationOffset(void)
+	void SetDragMode(EDragMode Mode)
 	{
-		bAbsoluteTranslationInitialOffsetCached = false;
+		DragMode = Mode;
 	}
+
+	void ResetInitialTranslationOffset(void);
 
 	// 是否处理一组 Mesh
-	bool IsGroupDragger() const
-	{
-		if (!MeshActorPtr.Get() && GroupMeshInfo.GroupMeshArray.Num() > 1)
-		{
-			return true;
-		}
-		else
-		{
-			return false;
-		}
-	}
+	bool IsGroupDragger() const;
 
 	// 是否处理单个 Mesh
-	bool IsMeshDragger() const
-	{
-		if (MeshActorPtr.Get() && GroupMeshInfo.GroupMeshArray.Num() <= 0)
-		{
-			return true;
-		}
-		else
-		{
-			return false;
+	bool IsMeshDragger() const;
+
+	bool IsWrapMode() const;
+
+	bool IsCenterMode() const;
+	
+	void SwitchMode() {
+		if (DragMode == WrapMode) {
+			DragMode = CenterMode;
+		} else {
+			DragMode = WrapMode;
 		}
 	}
 
@@ -137,16 +141,19 @@ public:
 		return GroupMeshInfo;
 	}
 
-	FVector GetControlledCenter()
-	{
-		if (BaseVerts.Num() != 6)
-		{
-			return  FVector::Zero();
-		}
-		return BaseVerts[0];
-	}
+	// 获取 AxisDrager 的移动基点
+	FVector GetExpectedPivot();
 
 private:
+	FVector GetControlledCenter() const;
+
+	FVector GetCurrentBaseVertexInWarpMode(bool bAxisFlipped) const;
+
+	FVector GetCurrentBaseVertexInCenterMode() const;
+
+	void AbsoluteTranslationConvertMouseToDragRot(const FSceneView* InView, FEditorViewportClient* InViewportClient,
+	                                              FVector& OutDrag, FRotator& OutRotation, FVector& OutScale);
+
 	void AbsoluteTranslationConvertMouseMovementToAxisMovement(
 		const FSceneView* InView, FEditorViewportClient* InViewportClient, const FVector& InLocation,
 		const FVector2D& InMousePosition, FVector& OutDrag, FRotator& OutRotation, FVector& OutScale);
@@ -162,17 +169,24 @@ private:
 
 	FVector GetAbsoluteTranslationInitialOffset(const FVector& InNewPosition, const FVector& InCurrentPosition);
 
+	// TODO remove
 	FVector GetMeshBaseVertex(const TArray<FVector>& InBaseVerts) const;
 
+	void RenderAxis(FPrimitiveDrawInterface* PDI, const FSceneView* View, const FVector& InLocation,
+	                EAxisList::Type InAxis, bool bFlipped, bool bCubeHead = false);
+
 private:
-	UMaterialInstanceDynamic* AxisMaterial;
+	UMaterialInstanceDynamic* WrapAxisMaterial;
+	UMaterialInstanceDynamic* CenterAxisMaterial;
 	UMaterialInstanceDynamic* CurrentAxisMaterial;
 
+	// Dragger 从局部空间到世界坐标空间的变换
 	FTransform WidgetTransform;
 
 	EAxisList::Type CurrentAxisType;
 	bool CurrentAxisFlipped;
 
+	// Content = [ Bottom, Top, Left, Right, Back, Front ]
 	TArray<FVector> BaseVerts;
 	TWeakObjectPtr<AStaticMeshActor> MeshActorPtr;
 
@@ -181,6 +195,8 @@ private:
 	bool bAbsoluteTranslationInitialOffsetCached;
 	FVector InitialTranslationOffset;
 	FVector InitialTranslationPosition;
+
+	EDragMode DragMode;
 };
 
 class HAxisDraggerProxy : public HHitProxy

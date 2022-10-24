@@ -7,6 +7,7 @@
 #include "Dragger/AxisDragger.h"
 #include "Dragger/DragTransaction.h"
 #include "Prefab/PrefabActor.h"
+#include "Widgets/Text/SRichTextBlock.h"
 #include "MeshEditorEditorMode.generated.h"
 
 DECLARE_DELEGATE(FOnCollectingMeshDataFinished);
@@ -59,7 +60,7 @@ public:
 
 	virtual void Enter() override;
 	virtual void Exit() override;
-
+	
 	virtual bool HandleClick(FEditorViewportClient* InViewportClient, HHitProxy* HitProxy,
 	                         const FViewportClick& Click) override;
 	virtual bool HandleAxisWidgetDelta(FEditorViewportClient* InViewportClient, const FVector& InDrag,
@@ -153,4 +154,7 @@ private:
 	FVector2D MouseOnScreenPosition{};
 
 	UMeshGeoData* CurrentMeshData{nullptr};
+
+	// -------------------- UI -----------------------
+	TSharedPtr<SRichTextBlock> OverlayText;
 };
